@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SevnX Monitor">
+  <!-- Original SevnX Monitor mark: a compact four-part telemetry pulse. -->
+  <rect x="24" y="24" width="464" height="464" rx="116" fill="#1769d8"/>
+  <path d="M136 129c-13 0-24 11-24 24 0 6 2 12 7 17l78 86 42-46-79-74c-5-5-15-7-24-7Z" fill="#ffffff"/>
+  <path d="M376 129c-9 0-19 2-24 7l-79 74 42 46 78-86c5-5 7-11 7-17 0-13-11-24-24-24Z" fill="#c3f4ff"/>
+  <path d="m197 256-78 86c-5 5-7 11-7 17 0 13 11 24 24 24 9 0 19-2 24-7l79-74-42-46Z" fill="#8eeaff"/>
+  <path d="m315 256-42 46 79 74c5 5 15 7 24 7 13 0 24-11 24-24 0-6-2-12-7-17l-78-86Z" fill="#ffffff"/>
+  <circle cx="256" cy="256" r="30" fill="#0d3f93"/>
+  <circle cx="256" cy="256" r="15" fill="#ffffff"/>
+</svg>

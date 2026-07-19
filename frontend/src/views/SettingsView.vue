@@ -1,0 +1,102 @@
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import AppIcon from '../components/AppIcon.vue'
+import ToggleSwitch from '../components/ToggleSwitch.vue'
+import { useAppStore } from '../stores/app'
+import type { AlertInterval, ThemeMode } from '../types/contracts'
+
+const app = useAppStore()
+const threshold = ref(String(app.settings.lowBalanceThreshold))
+
+watch(() => app.settings.lowBalanceThreshold, (value) => {
+  threshold.value = String(value)
+})
+
+function updateTheme(event: Event): void {
+  app.saveSettings({ theme: (event.target as HTMLSelectElement).value as ThemeMode })
+}
+
+function updateThreshold(): void {
+  const value = Number(threshold.value)
+  if (!Number.isFinite(value) || value < 0) {
+    threshold.value = String(app.settings.lowBalanceThreshold)
+    return
+  }
+  app.saveSettings({ lowBalanceThreshold: value })
+}
+
+function updateInterval(event: Event): void {
+  app.saveSettings({ alertInterval: (event.target as HTMLSelectElement).value as AlertInterval })
+}
+</script>
+
+<template>
+  <main class="settings-view section-surface" aria-label="设置">
+    <div class="settings-titlebar">
+      <button class="back-button" type="button" @click="app.activeView = 'dashboard'">
+        <AppIcon name="back" :size="17" />
+        <span>返回</span>
+      </button>
+      <h1>设置</h1>
+      <span aria-hidden="true" />
+    </div>
+
+    <section class="settings-section">
+      <p class="settings-section__label">显示与刷新</p>
+      <div class="settings-list">
+        <label class="settings-row">
+          <span><strong>主题</strong><small>选择界面外观</small></span>
+          <select :value="app.settings.theme" @change="updateTheme">
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+            <option value="system">跟随系统</option>
+          </select>
+        </label>
+        <div class="settings-row">
+          <span><strong>自动刷新</strong><small>按窗口可见状态安排刷新</small></span>
+          <ToggleSwitch :model-value="app.settings.autoRefresh" label="自动刷新" @update:model-value="app.saveSettings({ autoRefresh: $event })" />
+        </div>
+        <div class="settings-row">
+          <span><strong>显示吸附横条</strong><small>横条始终置顶，可拖动吸附</small></span>
+          <ToggleSwitch :model-value="app.settings.barVisible" label="显示吸附横条" @update:model-value="app.saveSettings({ barVisible: $event })" />
+        </div>
+        <div class="settings-row">
+          <span><strong>开机自动启动</strong><small>默认关闭</small></span>
+          <ToggleSwitch :model-value="app.settings.autostart" label="开机自动启动" @update:model-value="app.saveSettings({ autostart: $event })" />
+        </div>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <p class="settings-section__label">低余额提醒</p>
+      <div class="settings-list">
+        <div class="settings-row">
+          <span><strong>低余额提醒</strong><small>仅发送 Windows 系统通知</small></span>
+          <ToggleSwitch :model-value="app.settings.lowBalanceAlert" label="低余额提醒" @update:model-value="app.saveSettings({ lowBalanceAlert: $event })" />
+        </div>
+        <label class="settings-row">
+          <span><strong>余额阈值</strong><small>余额小于或等于此值时提醒</small></span>
+          <span class="number-input"><b>¥</b><input v-model="threshold" type="number" min="0" step="any" inputmode="decimal" @change="updateThreshold" /></span>
+        </label>
+        <label class="settings-row">
+          <span><strong>重复间隔</strong><small>余额持续偏低时再次提醒</small></span>
+          <select :value="app.settings.alertInterval" :disabled="!app.settings.lowBalanceAlert" @change="updateInterval">
+            <option value="15m">15 分钟</option>
+            <option value="30m">30 分钟</option>
+            <option value="1h">1 小时</option>
+            <option value="6h">6 小时</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <p class="settings-section__label">账户与诊断</p>
+      <div class="settings-list settings-list--actions">
+        <button type="button" class="settings-action" @click="app.login"><span><strong>重新登录</strong><small>在应用内重新打开登录窗口</small></span><AppIcon name="login" /></button>
+        <button type="button" class="settings-action" @click="app.openOfficialDashboard"><span><strong>打开 SevnX Dashboard</strong><small>使用系统默认浏览器</small></span><AppIcon name="external" /></button>
+        <button type="button" class="settings-action" @click="app.copyDiagnosticSummary"><span><strong>复制诊断信息</strong><small>仅包含脱敏环境与状态摘要</small></span><AppIcon name="copy" /></button>
+      </div>
+    </section>
+  </main>
+</template>

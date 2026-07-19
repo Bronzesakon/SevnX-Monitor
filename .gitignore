@@ -1,0 +1,23 @@
+# Formal Tauri application build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.pnpm-store/
+src-tauri/target/
+target/
+
+# Local credentials, browser profile, diagnostics and environment overrides
+.sevnx-profile/
+.field-audit/
+.env
+.env.local
+*.log
+
+# Never include runtime state from the installed application.
+/WebView2/
+/auth/
+/logs/
+
+# Local specification and archived prototype sources
+/PROJECT_SPEC.md
+/RAW_MimoDesktopAssistant/
