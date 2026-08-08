@@ -87,14 +87,35 @@ pub struct TokenTrendPoint {
     pub date: Option<String>,
     pub total_tokens: Option<Decimal>,
     pub display_total_tokens: Option<String>,
+    pub input_tokens: Option<Decimal>,
+    pub output_tokens: Option<Decimal>,
+    pub cache_creation_tokens: Option<Decimal>,
+    pub cache_read_tokens: Option<Decimal>,
+    pub actual_cost: Option<Decimal>,
+    pub cost: Option<Decimal>,
 }
 
 impl TokenTrendPoint {
-    pub(crate) fn from_values(date: Option<String>, total_tokens: Option<Decimal>) -> Self {
+    pub(crate) fn from_values(
+        date: Option<String>,
+        total_tokens: Option<Decimal>,
+        input_tokens: Option<Decimal>,
+        output_tokens: Option<Decimal>,
+        cache_creation_tokens: Option<Decimal>,
+        cache_read_tokens: Option<Decimal>,
+        actual_cost: Option<Decimal>,
+        cost: Option<Decimal>,
+    ) -> Self {
         Self {
             display_total_tokens: display_decimal(&total_tokens),
             date,
             total_tokens,
+            input_tokens,
+            output_tokens,
+            cache_creation_tokens,
+            cache_read_tokens,
+            actual_cost,
+            cost,
         }
     }
 }

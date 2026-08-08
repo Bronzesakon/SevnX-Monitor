@@ -148,7 +148,7 @@ mod tests {
             "Authorization: Bearer test-token-123\n",
             "Cookie: session=test-cookie-456\n",
             "{\"api_key\":\"test-api-key-789\",\"token\":\"test-json-token\"}\n",
-            "https://www.sevnx.one/?access_token=test-access-token"
+            "https://www.sevnx.lol/?access_token=test-access-token"
         );
 
         let output = redact_text(input);

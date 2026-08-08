@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
 use reqwest::{
@@ -109,6 +112,7 @@ impl VerifiedUsageQuery {
 pub struct SevnxApiClient {
     http: Client,
     session: Session,
+    default_api_origin: Arc<Mutex<String>>,
 }
 
 impl SevnxApiClient {
@@ -119,7 +123,18 @@ impl SevnxApiClient {
             .user_agent("SevnX-Monitor/0.1")
             .build()
             .map_err(|_| ApiError::HttpStatus)?;
-        Ok(Self { http, session })
+        Ok(Self {
+            http,
+            session,
+            default_api_origin: Arc::new(Mutex::new(Endpoint::API_ORIGIN.to_owned())),
+        })
+    }
+
+    pub fn set_default_api_origin(&self, access_url: &str) {
+        let origin = format!("{}/api/v1", access_url.trim().trim_end_matches('/'));
+        if let Ok(mut current) = self.default_api_origin.lock() {
+            *current = origin;
+        }
     }
 
     pub async fn fetch_dashboard(&self) -> Result<DashboardSnapshot, ApiError> {
@@ -232,11 +247,16 @@ impl SevnxApiClient {
         query: &[(&str, &str)],
     ) -> Result<bytes::Bytes, ApiError> {
         let credentials = self.session.request_credentials().await?;
+        let default_origin = self
+            .default_api_origin
+            .lock()
+            .map(|origin| origin.clone())
+            .unwrap_or_else(|_| Endpoint::API_ORIGIN.to_owned());
         let origin = credentials
             .request_context
             .api_origin
             .as_deref()
-            .unwrap_or(Endpoint::API_ORIGIN);
+            .unwrap_or(default_origin.as_str());
         let url = format!("{}{}", origin.trim_end_matches('/'), endpoint.path());
         let mut request = self
             .http
@@ -287,7 +307,12 @@ impl SevnxApiClient {
         api_origin: Option<&str>,
         context: Option<&RequestContext>,
     ) -> Result<bytes::Bytes, ApiError> {
-        let origin = api_origin.unwrap_or(Endpoint::API_ORIGIN);
+        let default_origin = self
+            .default_api_origin
+            .lock()
+            .map(|origin| origin.clone())
+            .unwrap_or_else(|_| Endpoint::API_ORIGIN.to_owned());
+        let origin = api_origin.unwrap_or(default_origin.as_str());
         let url = format!("{}{}", origin.trim_end_matches('/'), endpoint.path());
         let referer = dashboard_referer(origin);
         let mut request = self.http.get(url).header(REFERER, referer).query(query);
@@ -338,12 +363,11 @@ fn apply_request_context(
     request
 }
 
-fn dashboard_referer(api_origin: &str) -> &'static str {
-    if api_origin.starts_with("https://sevnx.one/") {
-        "https://sevnx.one/dashboard"
-    } else {
-        "https://www.sevnx.one/dashboard"
-    }
+fn dashboard_referer(api_origin: &str) -> String {
+    format!(
+        "{}/dashboard",
+        api_origin.trim_end_matches("/api/v1").trim_end_matches('/')
+    )
 }
 
 fn resolve_request_results(

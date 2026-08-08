@@ -195,7 +195,18 @@ impl UsageStats {
         let token_trend = snapshot
             .trend
             .into_iter()
-            .map(|row| TokenTrendPoint::from_values(row.date, row.total_tokens))
+            .map(|row| {
+                TokenTrendPoint::from_values(
+                    row.date,
+                    row.total_tokens,
+                    row.input_tokens,
+                    row.output_tokens,
+                    row.cache_creation_tokens,
+                    row.cache_read_tokens,
+                    row.actual_cost,
+                    row.cost,
+                )
+            })
             .collect();
         let endpoints = self
             .endpoints
@@ -336,6 +347,24 @@ mod tests {
             usage.token_trend[0].total_tokens,
             Some(Decimal::new(500, 0))
         );
+        assert_eq!(
+            usage.token_trend[0].input_tokens,
+            Some(Decimal::new(300, 0))
+        );
+        assert_eq!(
+            usage.token_trend[0].output_tokens,
+            Some(Decimal::new(200, 0))
+        );
+        assert_eq!(
+            usage.token_trend[0].cache_creation_tokens,
+            Some(Decimal::new(2, 0))
+        );
+        assert_eq!(
+            usage.token_trend[0].cache_read_tokens,
+            Some(Decimal::new(3, 0))
+        );
+        assert_eq!(usage.token_trend[0].actual_cost, Some(Decimal::new(50, 2)));
+        assert_eq!(usage.token_trend[0].cost, Some(Decimal::new(60, 2)));
         assert_eq!(usage.models[0].label.as_deref(), Some("gpt-safe-model"));
         assert_eq!(usage.groups[0].label.as_deref(), Some("默认分组"));
         assert_eq!(
@@ -347,6 +376,8 @@ mod tests {
         let ipc = serde_json::to_string(&usage).expect("snapshot serializes");
         assert!(ipc.contains("\"summary\""));
         assert!(ipc.contains("\"totalActualCost\""));
+        assert!(ipc.contains("\"cacheReadTokens\""));
+        assert!(ipc.contains("\"actualCost\""));
         assert!(!ipc.contains("group-id-must-not-leave-ipc"));
     }
 

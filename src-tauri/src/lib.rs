@@ -34,6 +34,9 @@ pub fn run() {
         .manage(services)
         .setup(|app| {
             services::tray::setup(app)?;
+            // Explicitly restore and focus the main window on the initial launch.
+            services::windows::show_main_window(app.handle())
+                .map_err(|error| std::io::Error::other(error.message))?;
             let services = app.state::<app::AppServices>();
             let (bar_visible, bar_position) = services.initial_bar_state();
             services::windows::create_bar_window(app.handle(), bar_visible, bar_position)

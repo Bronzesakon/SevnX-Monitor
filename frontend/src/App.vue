@@ -17,7 +17,7 @@ const shell = ref<HTMLElement | null>(null)
 const usageViewComponent = shallowRef<Component | null>(null)
 let usageViewPromise: Promise<void> | undefined
 const isBarWindow = isTauriRuntime() && getCurrentWindow().label === 'bar'
-const showLogin = computed(() => (
+const requiresLogin = computed(() => (
   app.initialized
   && app.auth !== 'authenticated'
   && app.auth !== 'validating'
@@ -128,12 +128,24 @@ onBeforeUnmount(() => {
 <template>
   <div ref="shell" class="app-shell" :class="{ 'app-shell--bar': isBarWindow }">
     <BarView v-if="isBarWindow" :dashboard="app.snapshot?.dashboard" />
-    <template v-else-if="showLogin">
+    <template v-else-if="requiresLogin">
       <header class="login-window-chrome">
         <div class="window-drag-space" data-tauri-drag-region aria-hidden="true"></div>
+        <IconButton
+          v-if="app.activeView !== 'settings'"
+          icon="settings"
+          label="设置"
+          @click="app.activeView = 'settings'"
+        />
         <IconButton icon="close" label="隐藏到托盘" @click="hideWindow" />
       </header>
-      <LoginGuide :busy="app.pending || app.auth === 'loggingIn' || app.auth === 'validating'" :message="loginMessage" @login="app.login" />
+      <SettingsView v-if="app.activeView === 'settings'" />
+      <LoginGuide
+        v-else
+        :busy="app.pending || app.auth === 'loggingIn' || app.auth === 'validating'"
+        :message="loginMessage"
+        @login="app.login"
+      />
     </template>
     <template v-else>
       <header class="app-header" data-tauri-drag-region>

@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -26,13 +26,93 @@ use crate::{
 };
 
 const LOGIN_LABEL: &str = "login";
-const LOGIN_URL: &str = "https://www.sevnx.one/login?redirect=/dashboard";
-const COOKIE_ORIGIN_APEX: &str = "https://sevnx.one/";
-const COOKIE_ORIGIN_WWW: &str = "https://www.sevnx.one/";
+const DEFAULT_ACCESS_URL: &str = "https://www.sevnx.lol";
 const MAX_BEARER_TOKEN_LENGTH: usize = 8 * 1024;
 const MAX_COOKIE_HEADER_LENGTH: usize = 64 * 1024;
-const API_REQUEST_FILTER_APEX: &str = "https://sevnx.one/api/v1/*";
-const API_REQUEST_FILTER_WWW: &str = "https://www.sevnx.one/api/v1/*";
+
+#[derive(Clone)]
+struct LoginSite {
+    origin: String,
+    host: String,
+    apex_host: String,
+}
+
+impl LoginSite {
+    fn parse(access_url: &str) -> Result<Self, PublicError> {
+        let url = Url::parse(access_url.trim())
+            .map_err(|_| PublicError::new(PublicErrorCode::InvalidResponse, "访问网址 URL 无效"))?;
+        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+        if url.scheme() != "https"
+            || host.is_empty()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || (url.path() != "" && url.path() != "/")
+        {
+            return Err(PublicError::new(
+                PublicErrorCode::InvalidResponse,
+                "访问网址 URL 必须是有效的 HTTPS 网站地址",
+            ));
+        }
+        let host_port = url
+            .port()
+            .map_or_else(|| host.clone(), |port| format!("{host}:{port}"));
+        Ok(Self {
+            origin: format!("https://{host_port}"),
+            apex_host: host.strip_prefix("www.").unwrap_or(&host).to_owned(),
+            host,
+        })
+    }
+
+    fn login_url(&self) -> String {
+        format!("{}/login?redirect=/dashboard", self.origin)
+    }
+
+    fn request_filters(&self) -> Vec<String> {
+        let mut filters = vec![format!("{}/api/v1/*", self.origin)];
+        if self.host.starts_with("www.") {
+            filters.push(format!("https://{}/api/v1/*", self.apex_host));
+        }
+        filters
+    }
+
+    fn cookie_origins(&self) -> Vec<String> {
+        let mut origins = vec![format!("{}/", self.origin)];
+        if self.host.starts_with("www.") {
+            origins.push(format!("https://{}/", self.apex_host));
+        }
+        origins
+    }
+
+    fn allows_host(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        host == self.host
+            || host == self.apex_host
+            || host.ends_with(&format!(".{}", self.apex_host))
+    }
+}
+
+static ACCESS_SITE: OnceLock<RwLock<LoginSite>> = OnceLock::new();
+
+fn access_site() -> LoginSite {
+    ACCESS_SITE
+        .get_or_init(|| {
+            RwLock::new(LoginSite::parse(DEFAULT_ACCESS_URL).expect("valid default access URL"))
+        })
+        .read()
+        .map(|site| site.clone())
+        .unwrap_or_else(|_| LoginSite::parse(DEFAULT_ACCESS_URL).expect("valid default access URL"))
+}
+
+fn configure_access_site(access_url: &str) -> Result<(), PublicError> {
+    let next = LoginSite::parse(access_url)?;
+    let lock = ACCESS_SITE.get_or_init(|| RwLock::new(next.clone()));
+    if let Ok(mut current) = lock.write() {
+        *current = next;
+    }
+    Ok(())
+}
 const DASHBOARD_CREDENTIAL_CAPTURE_TIMEOUT: Duration = Duration::from_secs(45);
 
 // This script deliberately does not enumerate storage. It reads only the
@@ -90,7 +170,7 @@ struct ObservedRequestCredentials {
     generation: u64,
     cookie_header: Option<String>,
     authorization_header: Option<String>,
-    api_origin: Option<&'static str>,
+    api_origin: Option<String>,
     request_kind: &'static str,
     request_path: String,
     authorization_scheme: &'static str,
@@ -104,7 +184,7 @@ impl LoginRequestCredentialObserver {
         &self,
         cookie_header: Option<String>,
         authorization_header: Option<String>,
-        api_origin: Option<&'static str>,
+        api_origin: Option<String>,
         request_kind: &'static str,
         request_path: String,
         authorization_scheme: &'static str,
@@ -177,7 +257,12 @@ struct LoginProbeLogState {
     validation_failure: Option<&'static str>,
 }
 
-pub async fn open_login_window(app: AppHandle, attempt: u64) -> Result<(), PublicError> {
+pub async fn open_login_window(
+    app: AppHandle,
+    attempt: u64,
+    access_url: String,
+) -> Result<(), PublicError> {
+    configure_access_site(&access_url)?;
     let services = app.state::<AppServices>();
     if let Some(existing) = app.get_webview_window(LOGIN_LABEL) {
         existing.show().map_err(window_error)?;
@@ -231,7 +316,7 @@ fn build_login_window(
     // the DPAPI store, so browser profile data is not another persistence path.
     fs::create_dir_all(&profile).map_err(|_| window_error(()))?;
 
-    let login_url = Url::parse(LOGIN_URL)
+    let login_url = Url::parse(&access_site().login_url())
         .map_err(|_| PublicError::new(PublicErrorCode::Internal, "登录地址无效"))?;
     let window = WebviewWindowBuilder::new(&app, LOGIN_LABEL, WebviewUrl::External(login_url))
         .title("SevnX Monitor 登录")
@@ -260,9 +345,9 @@ fn register_api_request_observer(
         .with_webview(move |webview| {
             let result = (|| unsafe {
                 let core = webview.controller().CoreWebView2()?;
-                for filter in [API_REQUEST_FILTER_APEX, API_REQUEST_FILTER_WWW] {
+                for filter in access_site().request_filters() {
                     core.AddWebResourceRequestedFilter(
-                        &HSTRING::from(filter),
+                        &HSTRING::from(&filter),
                         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
                     )?;
                 }
@@ -292,7 +377,7 @@ fn register_api_request_observer(
                         let has_origin = read_request_header(&headers, w!("Origin")).is_some();
                         let has_referer = read_request_header(&headers, w!("Referer")).is_some();
                         let request_context = crate::auth::RequestContext {
-                            api_origin: api_origin.map(str::to_owned),
+                            api_origin: api_origin.clone(),
                             user_agent: read_request_header(&headers, w!("User-Agent")),
                             accept: read_request_header(&headers, w!("Accept")),
                             accept_language: read_request_header(&headers, w!("Accept-Language")),
@@ -349,18 +434,19 @@ fn is_login_validation_request_uri(uri: &str) -> bool {
     is_allowed_credential_request_uri(uri) && url.path() == "/api/v1/usage/dashboard/stats"
 }
 
-fn observed_api_origin(uri: &str) -> Option<&'static str> {
+fn observed_api_origin(uri: &str) -> Option<String> {
     let Ok(url) = Url::parse(uri) else {
         return None;
     };
-    if !url.path().starts_with("/api/") {
+    let site = access_site();
+    if !url.path().starts_with("/api/") || !site.allows_host(url.host_str().unwrap_or_default()) {
         return None;
     }
-    match url.host_str().map(str::to_ascii_lowercase).as_deref() {
-        Some("sevnx.one") => Some("https://sevnx.one/api/v1"),
-        Some("www.sevnx.one") => Some("https://www.sevnx.one/api/v1"),
-        _ => None,
-    }
+    let host = url.host_str().unwrap_or_default();
+    let host_port = url
+        .port()
+        .map_or_else(|| host.to_owned(), |port| format!("{host}:{port}"));
+    Some(format!("https://{host_port}/api/v1"))
 }
 
 fn observed_request_kind(uri: &str) -> &'static str {
@@ -510,7 +596,7 @@ async fn poll_login_session(
                 .validate_login_candidate(
                     observed_request.cookie_header.as_deref(),
                     observed_request.authorization_header.as_deref(),
-                    observed_request.api_origin,
+                    observed_request.api_origin.as_deref(),
                     Some(&observed_request.request_context),
                 )
                 .await
@@ -774,8 +860,7 @@ pub fn handle_window_event(app: AppHandle, label: &str, event: &WindowEvent) {
 
 fn allow_login_navigation(app: &AppHandle, url: &Url) -> bool {
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    let allowed = matches!(host.as_str(), "sevnx.one" | "www.sevnx.one")
-        || host.ends_with(".sevnx.one")
+    let allowed = access_site().allows_host(&host)
         // Explicit identity-provider exceptions. No arbitrary external URL is
         // allowed to remain inside the application's WebView2 profile.
         || matches!(host.as_str(), "accounts.google.com" | "github.com");
@@ -792,6 +877,11 @@ async fn capture_login_credentials_legacy(
     window: WebviewWindow,
 ) -> Result<LoginCredentials, PublicError> {
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let cookie_origin = access_site()
+        .cookie_origins()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| format!("{}/", DEFAULT_ACCESS_URL));
     window
         .with_webview(move |webview| {
             let result = (|| unsafe {
@@ -819,7 +909,8 @@ async fn capture_login_credentials_legacy(
                     let _ = callback_sender.send(captured);
                     Ok(())
                 }));
-                cookie_manager.GetCookies(w!("https://www.sevnx.one/"), &handler)
+                let origin = HSTRING::from(&cookie_origin);
+                cookie_manager.GetCookies(&origin, &handler)
             })();
             if result.is_err() {
                 let _ = sender.send(Err(PublicError::new(
@@ -892,12 +983,14 @@ fn read_cookie_list_legacy(
 }
 
 async fn capture_login_credentials_v2(window: WebviewWindow) -> LoginCredentialCapture {
-    let apex = capture_cookies_for_origin(window.clone(), COOKIE_ORIGIN_APEX).await;
-    let www = capture_cookies_for_origin(window.clone(), COOKIE_ORIGIN_WWW).await;
-    let cookie_capture_failed = apex.is_err() || www.is_err();
+    let mut captures = Vec::new();
+    for origin in access_site().cookie_origins() {
+        captures.push(capture_cookies_for_origin(window.clone(), origin).await);
+    }
+    let cookie_capture_failed = captures.iter().any(Result::is_err);
     let mut pairs = BTreeMap::new();
     let mut expires_at = None;
-    for capture in [apex, www].into_iter().flatten() {
+    for capture in captures.into_iter().flatten() {
         pairs.extend(capture.pairs);
         if let Some(candidate) = capture.expires_at {
             expires_at =
@@ -933,16 +1026,12 @@ async fn capture_login_credentials_v2(window: WebviewWindow) -> LoginCredentialC
 }
 
 fn is_first_party_sevnx_url(url: &Url) -> bool {
-    url.scheme() == "https"
-        && matches!(
-            url.host_str().map(str::to_ascii_lowercase).as_deref(),
-            Some("sevnx.one" | "www.sevnx.one")
-        )
+    url.scheme() == "https" && access_site().allows_host(url.host_str().unwrap_or_default())
 }
 
 async fn capture_cookies_for_origin(
     window: WebviewWindow,
-    origin: &'static str,
+    origin: String,
 ) -> Result<CookieCapture, PublicError> {
     let (sender, mut receiver) = mpsc::unbounded_channel();
     window
@@ -964,7 +1053,7 @@ async fn capture_cookies_for_origin(
                     let _ = callback_sender.send(captured);
                     Ok(())
                 }));
-                let uri = HSTRING::from(origin);
+                let uri = HSTRING::from(&origin);
                 cookie_manager.GetCookies(&uri, &handler)
             })();
             if result.is_err() {
@@ -1147,50 +1236,50 @@ mod tests {
     #[test]
     fn storage_capture_is_limited_to_first_party_origins() {
         assert!(is_first_party_sevnx_url(
-            &Url::parse("https://www.sevnx.one/dashboard").expect("valid URL")
+            &Url::parse("https://www.sevnx.lol/dashboard").expect("valid URL")
         ));
         assert!(is_first_party_sevnx_url(
-            &Url::parse("https://sevnx.one/dashboard").expect("valid URL")
+            &Url::parse("https://sevnx.lol/dashboard").expect("valid URL")
         ));
         assert!(!is_first_party_sevnx_url(
-            &Url::parse("https://sevnx.one.example/dashboard").expect("valid URL")
+            &Url::parse("https://sevnx.lol.example/dashboard").expect("valid URL")
         ));
     }
 
     #[test]
     fn request_observer_accepts_first_party_api_routes_only() {
         assert!(is_allowed_credential_request_uri(
-            "https://www.sevnx.one/api/v1/auth/session"
+            "https://www.sevnx.lol/api/v1/auth/session"
         ));
         assert!(is_login_validation_request_uri(
-            "https://www.sevnx.one/api/v1/usage/dashboard/stats"
+            "https://www.sevnx.lol/api/v1/usage/dashboard/stats"
         ));
         assert!(!is_login_validation_request_uri(
-            "https://www.sevnx.one/api/v1/announcements"
+            "https://www.sevnx.lol/api/v1/announcements"
         ));
         assert_eq!(
-            observed_api_origin("https://sevnx.one/api/v1/auth/me"),
-            Some("https://sevnx.one/api/v1")
+            observed_api_origin("https://sevnx.lol/api/v1/auth/me"),
+            Some("https://sevnx.lol/api/v1".to_owned())
         );
         assert_eq!(
-            observed_api_origin("https://www.sevnx.one/api/v1/auth/me"),
-            Some("https://www.sevnx.one/api/v1")
+            observed_api_origin("https://www.sevnx.lol/api/v1/auth/me"),
+            Some("https://www.sevnx.lol/api/v1".to_owned())
         );
         assert!(!is_allowed_credential_request_uri(
-            "https://www.sevnx.one/dashboard"
+            "https://www.sevnx.lol/dashboard"
         ));
         assert!(!is_allowed_credential_request_uri(
-            "https://sevnx.one.example/api/v1/auth/me"
+            "https://sevnx.lol.example/api/v1/auth/me"
         ));
     }
 
     #[test]
     fn dashboard_detection_requires_a_first_party_dashboard_route() {
         assert!(is_dashboard_url(
-            &Url::parse("https://www.sevnx.one/dashboard?tab=overview").expect("valid URL")
+            &Url::parse("https://www.sevnx.lol/dashboard?tab=overview").expect("valid URL")
         ));
         assert!(!is_dashboard_url(
-            &Url::parse("https://www.sevnx.one/login?redirect=/dashboard").expect("valid URL")
+            &Url::parse("https://www.sevnx.lol/login?redirect=/dashboard").expect("valid URL")
         ));
     }
 }

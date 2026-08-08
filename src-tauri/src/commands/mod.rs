@@ -64,8 +64,9 @@ pub async fn open_login_window(
     services: State<'_, AppServices>,
 ) -> Result<(), PublicError> {
     let attempt = services.begin_login().await;
+    let access_url = services.settings().await.access_url;
     emit_app_state(&app, &services);
-    let result = webview_login::open_login_window(app.clone(), attempt).await;
+    let result = webview_login::open_login_window(app.clone(), attempt, access_url).await;
     if let Err(error) = &result {
         services.record_login_window_failure(attempt, error).await;
         emit_app_state(&app, &services);
@@ -74,9 +75,14 @@ pub async fn open_login_window(
 }
 
 #[tauri::command]
-pub fn open_dashboard_in_browser(app: AppHandle) -> Result<(), PublicError> {
+pub async fn open_dashboard_in_browser(
+    app: AppHandle,
+    services: State<'_, AppServices>,
+) -> Result<(), PublicError> {
+    let access_url = services.settings().await.access_url;
+    let dashboard_url = format!("{}/dashboard", access_url.trim_end_matches('/'));
     app.opener()
-        .open_url("https://www.sevnx.one/dashboard", None::<&str>)
+        .open_url(dashboard_url, None::<&str>)
         .map_err(|_| {
             PublicError::new(
                 crate::api::error::PublicErrorCode::Internal,

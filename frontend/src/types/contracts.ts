@@ -153,6 +153,7 @@ export interface AppSnapshot {
 }
 
 export interface AppSettings {
+  accessUrl: string
   theme: ThemeMode
   autoRefresh: boolean
   lowBalanceAlert: boolean

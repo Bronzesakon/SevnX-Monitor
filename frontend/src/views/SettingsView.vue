@@ -42,6 +42,23 @@ function updateInterval(event: Event): void {
     </div>
 
     <section class="settings-section">
+      <p class="settings-section__label">访问地址</p>
+      <div class="settings-list">
+        <label class="settings-row settings-row--url">
+          <span><strong>访问网址 URL</strong><small>用于登录、打开 Dashboard 和数据请求</small></span>
+          <input
+            class="url-input"
+            :value="app.settings.accessUrl"
+            type="url"
+            placeholder="https://www.sevnx.lol"
+            spellcheck="false"
+            @change="app.saveSettings({ accessUrl: ($event.target as HTMLInputElement).value.trim() })"
+          />
+        </label>
+      </div>
+    </section>
+
+    <section class="settings-section">
       <p class="settings-section__label">显示与刷新</p>
       <div class="settings-list">
         <label class="settings-row">

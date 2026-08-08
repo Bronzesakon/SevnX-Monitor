@@ -41,12 +41,12 @@ export const developmentSnapshot: AppSnapshot = {
       displayAverageDurationMs: '682 ms',
     },
     tokenTrend: [
-      { date: '00:00', totalTokens: 28400 },
-      { date: '04:00', totalTokens: 62100 },
-      { date: '08:00', totalTokens: 186400 },
-      { date: '12:00', totalTokens: 254600 },
-      { date: '16:00', totalTokens: 202300 },
-      { date: '20:00', totalTokens: 158700 },
+      { date: '00:00', totalTokens: 28400, inputTokens: 12500, outputTokens: 3900, cacheCreationTokens: 1000, cacheReadTokens: 11000, actualCost: '0.03', cost: '0.08' },
+      { date: '04:00', totalTokens: 62100, inputTokens: 28100, outputTokens: 8200, cacheCreationTokens: 2400, cacheReadTokens: 23400, actualCost: '0.09', cost: '0.21' },
+      { date: '08:00', totalTokens: 186400, inputTokens: 75200, outputTokens: 29700, cacheCreationTokens: 8300, cacheReadTokens: 73200, actualCost: '0.34', cost: '0.61' },
+      { date: '12:00', totalTokens: 254600, inputTokens: 102500, outputTokens: 40800, cacheCreationTokens: 11200, cacheReadTokens: 100100, actualCost: '0.48', cost: '0.82' },
+      { date: '16:00', totalTokens: 202300, inputTokens: 82500, outputTokens: 32100, cacheCreationTokens: 7600, cacheReadTokens: 80100, actualCost: '0.38', cost: '0.68' },
+      { date: '20:00', totalTokens: 158700, inputTokens: 64300, outputTokens: 24900, cacheCreationTokens: 5900, cacheReadTokens: 63600, actualCost: '0.29', cost: '0.51' },
     ],
     models: [
       { label: 'claude-sonnet-4', requests: 534, tokens: '612K', actualCost: '0.68', standardCost: '0.80' },

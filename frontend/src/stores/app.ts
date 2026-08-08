@@ -28,6 +28,7 @@ export type MainView = 'dashboard' | 'usage' | 'settings'
 export type UsagePanel = 'trend' | 'models' | 'groups' | 'endpoints'
 
 const defaultSettings: AppSettings = {
+  accessUrl: 'https://www.sevnx.lol',
   theme: 'system',
   autoRefresh: true,
   lowBalanceAlert: false,

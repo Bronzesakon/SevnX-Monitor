@@ -74,6 +74,7 @@ impl AppServices {
                 return Err(StorageError::Unavailable);
             }
         };
+        client.set_default_api_origin(&persisted_settings.settings.access_url);
         let refresh = RefreshCoordinator::new(client.clone(), state.clone());
         safe_log.write("app_services_initialized", "result=success");
         Ok(Self {
@@ -121,6 +122,7 @@ impl AppServices {
         }
         let mut persisted = self.persisted_settings.write().await;
         persisted.settings = next.clone();
+        self.client.set_default_api_origin(&next.access_url);
         let save_result = self.settings_store.save(&persisted);
         drop(persisted);
         if let Err(error) = save_result {

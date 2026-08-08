@@ -82,6 +82,9 @@ pub fn show_main_window(app: &AppHandle) -> Result<(), PublicError> {
 
     // A hidden-to-tray window can also be minimized. Restore that state before
     // showing it, then bring it to the foreground from the tray interaction.
+    if window.set_skip_taskbar(false).is_err() {
+        return Err(main_window_restore_error(app, "stage=taskbar"));
+    }
     if window.unminimize().is_err() {
         return Err(main_window_restore_error(app, "stage=unminimize"));
     }

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { compactTokenValue, moneyDisplay } from '../lib/format'
 import type { DashboardSnapshot } from '../types/contracts'
 
@@ -23,16 +22,13 @@ const values = computed(() => [
   },
 ])
 
-function beginDragging(): void {
-  void getCurrentWindow().startDragging().catch(() => undefined)
-}
 </script>
 
 <template>
   <main class="bar-view" aria-label="账户摘要横条">
     <div
       class="bar-view__surface"
-      @mousedown.left="beginDragging"
+      data-tauri-drag-region
     >
       <span class="bar-view__items">
         <span v-for="item in values" :key="item.label" class="bar-view__item">

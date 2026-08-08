@@ -12,7 +12,7 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
-    pub const API_ORIGIN: &'static str = "https://www.sevnx.one/api/v1";
+    pub const API_ORIGIN: &'static str = "https://www.sevnx.lol/api/v1";
 
     pub const fn path(self) -> &'static str {
         match self {
