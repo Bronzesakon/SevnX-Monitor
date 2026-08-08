@@ -14,7 +14,7 @@ pub const BAR_LABEL: &str = "bar";
 const BAR_WIDTH: f64 = 420.0;
 const BAR_HEIGHT: f64 = 32.0;
 const SNAP_DISTANCE: i32 = 22;
-const MAIN_MAX_HEIGHT: f64 = 900.0;
+const MAIN_MAX_HEIGHT: f64 = 1000.0;
 
 pub fn create_bar_window(
     app: &AppHandle,

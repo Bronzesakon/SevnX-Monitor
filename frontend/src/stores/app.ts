@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
-  copyDiagnostics,
   getAppSnapshot,
   getSettings,
   listenForAuthStatus,
@@ -11,9 +10,11 @@ import {
   listenForSnapshot,
   openDashboardInBrowser,
   openLoginWindow,
+  openLogFile as openLogFileIpc,
   refreshAll,
   setBarVisible,
   setUsageRange,
+  testRefresh,
   updateSettings,
 } from '../lib/ipc'
 import type {
@@ -154,6 +155,19 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function testRefreshToken(): Promise<void> {
+    actionError.value = null
+    try {
+      await testRefresh()
+      toast.value = '刷新请求已执行，结果见日志'
+      window.setTimeout(() => {
+        toast.value = null
+      }, 2200)
+    } catch (error) {
+      actionError.value = publicMessage(error)
+    }
+  }
+
   async function openOfficialDashboard(): Promise<void> {
     actionError.value = null
     try {
@@ -163,14 +177,10 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function copyDiagnosticSummary(): Promise<void> {
+  async function openLogFile(): Promise<void> {
     actionError.value = null
     try {
-      await copyDiagnostics()
-      toast.value = '诊断信息已复制'
-      window.setTimeout(() => {
-        toast.value = null
-      }, 2200)
+      await openLogFileIpc()
     } catch (error) {
       actionError.value = publicMessage(error)
     }
@@ -197,8 +207,9 @@ export const useAppStore = defineStore('app', () => {
     selectUsageRange,
     saveSettings,
     login,
+    testRefreshToken,
     openOfficialDashboard,
-    copyDiagnosticSummary,
+    openLogFile,
     dispose,
   }
 })

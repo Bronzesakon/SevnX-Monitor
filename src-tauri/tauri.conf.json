@@ -24,7 +24,7 @@
         "title": "SevnX Monitor",
         "width": 400,
         "height": 550,
-        "maxHeight": 900,
+        "maxHeight": 1000,
         "center": true,
         "resizable": false,
         "decorations": false,

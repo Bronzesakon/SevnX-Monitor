@@ -46,6 +46,11 @@ export async function refreshAll(): Promise<AppSnapshot> {
   return invoke<AppSnapshot>('refresh_all')
 }
 
+/** 调试用：无条件触发 refresh_token 刷新会话，结果写入应用日志。 */
+export async function testRefresh(): Promise<void> {
+  await invoke('test_refresh')
+}
+
 export async function openLoginWindow(): Promise<void> {
   await invoke('open_login_window')
 }
@@ -86,8 +91,8 @@ export async function setBarVisible(visible: boolean): Promise<void> {
   await invoke('set_bar_visible', { visible })
 }
 
-export async function copyDiagnostics(): Promise<void> {
-  await invoke('copy_diagnostics')
+export async function openLogFile(): Promise<void> {
+  await invoke('open_log_file')
 }
 
 export async function requestExit(): Promise<void> {

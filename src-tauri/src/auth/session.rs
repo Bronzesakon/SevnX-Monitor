@@ -62,6 +62,9 @@ pub(crate) struct PersistedSession {
     cookie_header: Option<String>,
     #[serde(default, alias = "bearer_token")]
     authorization_header: Option<String>,
+    /// 用于 /auth/refresh 自动续期。仅保存在 DPAPI 密文内，绝不对外暴露。
+    #[serde(default)]
+    refresh_token: Option<String>,
     expires_at: Option<DateTime<Utc>>,
     last_validated_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -73,6 +76,7 @@ pub(crate) struct PersistedSession {
 pub(crate) struct RequestCredentials {
     pub(crate) cookie_header: Option<String>,
     pub(crate) authorization_header: Option<String>,
+    pub(crate) refresh_token: Option<String>,
     pub(crate) request_context: RequestContext,
 }
 
@@ -91,6 +95,19 @@ impl Session {
                 .as_ref()
                 .and_then(|credentials| credentials.expires_at),
         }
+    }
+
+    /// 是否已持有 refresh_token（仅返回布尔，绝不暴露值）。同步版本供诊断摘要使用。
+    pub(crate) fn has_refresh_token(&self) -> bool {
+        self.inner
+            .try_read()
+            .ok()
+            .is_some_and(|inner| {
+                inner
+                    .credentials
+                    .as_ref()
+                    .is_some_and(|credentials| credentials.refresh_token.is_some())
+            })
     }
 
     pub async fn begin_login(&self) -> u64 {
@@ -113,14 +130,15 @@ impl Session {
         self.inner.write().await.auth = AuthStatus::Validating;
     }
 
-    /// Windows WebView2 integration will call this after obtaining a
-    /// first-party SevnX session. It is crate-private to prevent IPC callers
-    /// from supplying or retrieving credentials.
+    /// 仅供测试使用：构造"已持凭据但在 Validating 中间态"的状态，用来验证登录
+    /// 取消/回滚逻辑。生产登录提交走 [`commit_verified_login`](Self::commit_verified_login)，
+    /// 本方法不被生产代码调用。crate-private 防止 IPC 调用方提供或读取凭据。
     #[allow(dead_code)]
     pub(crate) async fn install_credentials(
         &self,
         cookie_header: Option<String>,
         authorization_header: Option<String>,
+        refresh_token: Option<String>,
         expires_at: Option<DateTime<Utc>>,
         request_context: RequestContext,
     ) {
@@ -128,6 +146,7 @@ impl Session {
         inner.credentials = Some(PersistedSession {
             cookie_header,
             authorization_header: normalize_authorization_header(authorization_header),
+            refresh_token,
             expires_at,
             last_validated_at: None,
             request_context,
@@ -144,6 +163,7 @@ impl Session {
         expected_generation: u64,
         cookie_header: Option<String>,
         authorization_header: Option<String>,
+        refresh_token: Option<String>,
         expires_at: Option<DateTime<Utc>>,
         request_context: RequestContext,
     ) -> bool {
@@ -156,6 +176,7 @@ impl Session {
         inner.credentials = Some(PersistedSession {
             cookie_header,
             authorization_header: normalize_authorization_header(authorization_header),
+            refresh_token,
             expires_at,
             last_validated_at: Some(last_validated_at),
             request_context,
@@ -163,6 +184,29 @@ impl Session {
         inner.auth = AuthStatus::Authenticated;
         inner.last_validated_at = Some(last_validated_at);
         true
+    }
+
+    /// 应用 /auth/refresh 返回的新凭据：轮换 access_token 与 refresh_token，并更新过期时间。
+    pub(crate) async fn apply_refreshed_credentials(
+        &self,
+        authorization_header: Option<String>,
+        refresh_token: Option<String>,
+        expires_at: Option<DateTime<Utc>>,
+    ) {
+        let mut inner = self.inner.write().await;
+        let Some(credentials) = inner.credentials.as_mut() else {
+            return;
+        };
+        credentials.authorization_header = normalize_authorization_header(authorization_header);
+        if refresh_token.is_some() {
+            credentials.refresh_token = refresh_token;
+        }
+        if expires_at.is_some() {
+            credentials.expires_at = expires_at;
+        }
+        credentials.last_validated_at = Some(Utc::now());
+        inner.last_validated_at = Some(Utc::now());
+        inner.auth = AuthStatus::Authenticated;
     }
 
     /// Clears the re-login backup only after AppServices has won the matching
@@ -210,6 +254,7 @@ impl Session {
         Ok(RequestCredentials {
             cookie_header: credentials.cookie_header,
             authorization_header: credentials.authorization_header,
+            refresh_token: credentials.refresh_token,
             request_context: credentials.request_context,
         })
     }
@@ -390,6 +435,7 @@ mod tests {
                 Some("session=test-cookie".to_string()),
                 Some("test-token".to_string()),
                 None,
+                None,
                 RequestContext::default(),
             )
             .await;
@@ -410,6 +456,7 @@ mod tests {
                 Some("session=new-cookie".to_string()),
                 None,
                 None,
+                None,
                 RequestContext::default(),
             )
             .await;
@@ -426,6 +473,7 @@ mod tests {
         session
             .install_credentials(
                 Some("session=new-cookie".to_string()),
+                None,
                 None,
                 None,
                 RequestContext::default(),
@@ -455,6 +503,7 @@ mod tests {
                     Some("session=late-cookie".to_string()),
                     None,
                     None,
+                    None,
                     RequestContext::default(),
                 )
                 .await
@@ -471,6 +520,7 @@ mod tests {
                 Some("session=old-cookie".to_string()),
                 None,
                 None,
+                None,
                 RequestContext::default(),
             )
             .await;
@@ -482,6 +532,7 @@ mod tests {
                 .commit_verified_login(
                     generation,
                     Some("session=new-cookie".to_string()),
+                    None,
                     None,
                     None,
                     RequestContext::default(),
@@ -504,14 +555,17 @@ mod tests {
                 Some("session=old-cookie".to_string()),
                 None,
                 None,
+                None,
                 RequestContext::default(),
             )
             .await;
+
         session.mark_validated().await;
         session.begin_login().await;
         session
             .install_credentials(
                 Some("session=new-cookie".to_string()),
+                None,
                 None,
                 None,
                 RequestContext::default(),

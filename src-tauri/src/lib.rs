@@ -66,6 +66,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_snapshot,
             commands::refresh_all,
+            commands::test_refresh,
             commands::set_usage_range,
             commands::open_login_window,
             commands::open_dashboard_in_browser,
@@ -75,7 +76,7 @@ pub fn run() {
             commands::hide_main_window,
             commands::set_main_window_height,
             commands::set_bar_visible,
-            commands::copy_diagnostics,
+            commands::open_log_file,
             commands::request_exit,
         ])
         .run(tauri::generate_context!())

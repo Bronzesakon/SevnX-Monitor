@@ -136,19 +136,28 @@ SevnX 本地 HTTP 服务只保留 **2 个端点**：
 
 ---
 
-## 7. Cookie 失效自动续期
+## 7. 登录态与自动续期（已实测确认）
 
-现状（`src-tauri/src/auth/session.rs`）已有**被动续期**：
-- `apply_set_cookie_headers`（L297）：每次成功响应把服务器 Set-Cookie 合并进 session 并更新 `expires_at`。
-- `request_credentials`（L192）：请求前检查过期，逾期才 `mark_expired`（需重登）。
-- `auto_refresh` 每 30s 请求 dashboard，顺带触发 Set-Cookie 续期。
-- 结论：只要 `auto_refresh` 在跑且服务器下发续期 cookie，即自动续期，无需用户介入。
+### 登录态本质
+- 登录接口：`POST {access_url}/api/v1/auth/login`，body `{"email","password"}`，`Content-Type: application/json`，**无 CSRF/无特殊 header**（平行登录极易做）。
+- 响应 `data`：`access_token`（JWT）、`refresh_token`（`rt_...`）、`expires_in: 86400`（24h）、`token_type: Bearer`、`user`（含 `balance` 等）。
+- **登录态是 Bearer JWT，不是 cookie**。存 `authorization_header = "Bearer <access_token>"` 即可（`PersistedSession` 已有该字段）。
 
-增强方向：
-1. **主动预热续期（推荐，改动小）**：当 `expires_at - now < 阈值`（如 5 分钟）时，
-   主动调一次轻量读端点（`dashboard/stats` 或 `/auth/me`）触发 Set-Cookie 续期，抢在到期前。
-2. **Refresh Token**：当前只存 cookie + bearer，无独立 refresh_token；若后端支持则接入（需后端配合）。
-3. **边界**：服务器 revoke 或短期 cookie 且普通请求不续期时，最终仍需重登。
+### 自动续期：refresh_token 优先（最优，无需存密码）
+- 实测 `POST {access_url}/api/v1/auth/refresh`，body `{"refresh_token":"rt_..."}`，**可用**。
+- 返回新的 `access_token` + **新的 `refresh_token`（轮换）** + `expires_in: 86400`。
+- 结论：**每次刷新必须用返回的新 `refresh_token` 覆盖旧值存储**（轮换语义）。
+- 注：搭建者称"不能刷新"，但实测端点可用——是网页端未暴露，后端实际支持。以实测为准。
+
+### 方案
+1. `PersistedSession` 增加 `refresh_token` 字段（DPAPI 加密存储）。
+2. 到期前（`expires_at - now < 阈值`，如剩 10-30 分钟）调 `/auth/refresh` 换新，
+   更新 `access_token` + `refresh_token` + `expires_at`。
+3. 触发点放在 `AppServices::refresh_current` 开头（覆盖手动/自动刷新）。
+4. 回退：refresh 失败 → 若存了账密则调 `/auth/login` 重登；否则转手动登录（现有 WebView2 流程）。
+
+### 边界
+- 服务器 revoke refresh_token 或 refresh 连续失败时，回退账密重登或手动登录。
 
 ---
 

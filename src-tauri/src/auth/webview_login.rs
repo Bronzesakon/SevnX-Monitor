@@ -157,6 +157,7 @@ const WHITELISTED_STORAGE_TOKEN_SCRIPT: &str = r#"
 struct LoginCredentials {
     cookie_header: Option<String>,
     authorization_header: Option<String>,
+    refresh_token: Option<String>,
     expires_at: Option<DateTime<Utc>>,
 }
 
@@ -608,11 +609,17 @@ async fn poll_login_session(
                         services.finish_login_capture();
                         return;
                     }
+                    // 从 CookieManager 读取 refresh_token（httpOnly cookie，JS 读不到）。
+                    let cookie_refresh_token = capture_login_credentials_v2(window.clone())
+                        .await
+                        .credentials
+                        .and_then(|c| c.refresh_token);
                     match services
                         .complete_login_from_verified_credentials(
                             attempt,
                             observed_request.cookie_header,
                             observed_request.authorization_header,
+                            cookie_refresh_token,
                             None,
                             observed_request.request_context,
                         )
@@ -728,6 +735,7 @@ async fn poll_login_session(
                 attempt,
                 credentials.cookie_header,
                 credentials.authorization_header,
+                credentials.refresh_token,
                 credentials.expires_at,
                 crate::auth::RequestContext::default(),
             )
@@ -872,116 +880,6 @@ fn allow_login_navigation(app: &AppHandle, url: &Url) -> bool {
     allowed
 }
 
-#[allow(dead_code)]
-async fn capture_login_credentials_legacy(
-    window: WebviewWindow,
-) -> Result<LoginCredentials, PublicError> {
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let cookie_origin = access_site()
-        .cookie_origins()
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| format!("{}/", DEFAULT_ACCESS_URL));
-    window
-        .with_webview(move |webview| {
-            let result = (|| unsafe {
-                let core = webview.controller().CoreWebView2()?;
-                let core =
-                    core.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2>()?;
-                let cookie_manager = core.CookieManager()?;
-                let callback_sender = sender.clone();
-                let handler = GetCookiesCompletedHandler::create(Box::new(move |status, list| {
-                    let captured = if status.is_err() {
-                        Err(PublicError::new(
-                            PublicErrorCode::AuthenticationRequired,
-                            "未能读取登录凭证",
-                        ))
-                    } else {
-                        list.as_ref()
-                            .ok_or_else(|| {
-                                PublicError::new(
-                                    PublicErrorCode::AuthenticationRequired,
-                                    "未检测到登录凭证",
-                                )
-                            })
-                            .and_then(read_cookie_list_legacy)
-                    };
-                    let _ = callback_sender.send(captured);
-                    Ok(())
-                }));
-                let origin = HSTRING::from(&cookie_origin);
-                cookie_manager.GetCookies(&origin, &handler)
-            })();
-            if result.is_err() {
-                let _ = sender.send(Err(PublicError::new(
-                    PublicErrorCode::AuthenticationRequired,
-                    "未能读取登录凭证",
-                )));
-            }
-        })
-        .map_err(window_error)?;
-
-    tokio::time::timeout(Duration::from_secs(10), receiver.recv())
-        .await
-        .map_err(|_| PublicError::new(PublicErrorCode::Timeout, "读取登录凭证超时"))?
-        .ok_or_else(|| PublicError::new(PublicErrorCode::Internal, "登录窗口已关闭"))?
-}
-
-#[allow(dead_code)]
-fn read_cookie_list_legacy(
-    list: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2CookieList,
-) -> Result<LoginCredentials, PublicError> {
-    let mut count = 0;
-    unsafe {
-        list.Count(&mut count).map_err(|_| {
-            PublicError::new(PublicErrorCode::AuthenticationRequired, "未检测到登录凭证")
-        })?;
-    }
-    let mut pairs = Vec::with_capacity(count as usize);
-    let mut expires_at = None;
-    for index in 0..count {
-        let cookie = unsafe {
-            list.GetValueAtIndex(index).map_err(|_| {
-                PublicError::new(PublicErrorCode::AuthenticationRequired, "未能读取登录凭证")
-            })?
-        };
-        let mut name = PWSTR::null();
-        let mut value = PWSTR::null();
-        unsafe {
-            cookie.Name(&mut name).map_err(|_| {
-                PublicError::new(PublicErrorCode::AuthenticationRequired, "未能读取登录凭证")
-            })?;
-            cookie.Value(&mut value).map_err(|_| {
-                PublicError::new(PublicErrorCode::AuthenticationRequired, "未能读取登录凭证")
-            })?;
-        }
-        let name = take_pwstr(name);
-        let value = take_pwstr(value);
-        if name.is_empty() || value.is_empty() {
-            continue;
-        }
-        let mut expires = 0_f64;
-        if unsafe { cookie.Expires(&mut expires) }.is_ok() && expires.is_finite() && expires > 0.0 {
-            let candidate = Utc.timestamp_opt(expires.floor() as i64, 0).single();
-            if candidate.is_some() {
-                expires_at = candidate.or(expires_at);
-            }
-        }
-        pairs.push(format!("{name}={value}"));
-    }
-    if pairs.is_empty() {
-        return Err(PublicError::new(
-            PublicErrorCode::AuthenticationRequired,
-            "未检测到登录凭证",
-        ));
-    }
-    Ok(LoginCredentials {
-        cookie_header: Some(pairs.join("; ")),
-        authorization_header: None,
-        expires_at,
-    })
-}
-
 async fn capture_login_credentials_v2(window: WebviewWindow) -> LoginCredentialCapture {
     let mut captures = Vec::new();
     for origin in access_site().cookie_origins() {
@@ -997,6 +895,20 @@ async fn capture_login_credentials_v2(window: WebviewWindow) -> LoginCredentialC
                 Some(expires_at.map_or(candidate, |current: DateTime<Utc>| current.min(candidate)));
         }
     }
+    // refresh_token 的 cookie 路径是 /api/v1/auth，不会被 path=/ 的 origin 查询匹配到，
+    // 额外按该路径再查一次（失败不影响主流程），确保能读到 refresh_token。
+    for origin in access_site().cookie_origins() {
+        if let Ok(capture) =
+            capture_cookies_for_origin(window.clone(), format!("{origin}api/v1/auth")).await
+        {
+            pairs.extend(capture.pairs);
+            if let Some(candidate) = capture.expires_at {
+                expires_at = Some(
+                    expires_at.map_or(candidate, |current: DateTime<Utc>| current.min(candidate)),
+                );
+            }
+        }
+    }
 
     let storage = match window.url() {
         Ok(url) if is_first_party_sevnx_url(&url) => capture_storage_tokens(window).await,
@@ -1004,6 +916,9 @@ async fn capture_login_credentials_v2(window: WebviewWindow) -> LoginCredentialC
     };
     let storage_capture_failed = storage.is_err();
     let bearer_candidates = storage.unwrap_or_default();
+    // refresh_token 是通过 Set-Cookie 下发的（路径 /api/v1/auth），前端 JS 读不到，
+    // 只能从 CookieManager 读到的 cookie 里单独提取。
+    let refresh_token = pairs.get("refresh_token").cloned();
     let cookie_header = (!pairs.is_empty()).then(|| {
         pairs
             .into_iter()
@@ -1015,6 +930,7 @@ async fn capture_login_credentials_v2(window: WebviewWindow) -> LoginCredentialC
         (cookie_header.is_some() || !bearer_candidates.is_empty()).then_some(LoginCredentials {
             cookie_header,
             authorization_header: None,
+            refresh_token,
             expires_at,
         });
     LoginCredentialCapture {

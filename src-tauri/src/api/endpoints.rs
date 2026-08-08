@@ -9,6 +9,7 @@ pub enum Endpoint {
     DashboardModels,
     DashboardSnapshotV2,
     UsageStats,
+    RefreshToken,
 }
 
 impl Endpoint {
@@ -21,20 +22,25 @@ impl Endpoint {
             Self::DashboardModels => "/usage/dashboard/models",
             Self::DashboardSnapshotV2 => "/usage/dashboard/snapshot-v2",
             Self::UsageStats => "/usage/stats",
+            Self::RefreshToken => "/auth/refresh",
         }
     }
 
     pub const fn method(self) -> &'static str {
-        "GET"
+        match self {
+            Self::RefreshToken => "POST",
+            _ => "GET",
+        }
     }
 
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 6] {
         [
             Self::AuthMe,
             Self::DashboardStats,
             Self::DashboardModels,
             Self::DashboardSnapshotV2,
             Self::UsageStats,
+            Self::RefreshToken,
         ]
     }
 }

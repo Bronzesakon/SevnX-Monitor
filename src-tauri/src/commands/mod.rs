@@ -8,7 +8,7 @@ use crate::{
     app::AppServices,
     auth::webview_login,
     model::{AppSettings, AppSnapshot, AuthStatus, RefreshStatus, UsageRange},
-    services::{balance_alert, diagnostics, windows},
+    services::{balance_alert, windows},
 };
 
 #[derive(Clone, Serialize)]
@@ -37,6 +37,18 @@ pub async fn refresh_all(
     if result.is_ok() {
         balance_alert::evaluate(&app, &services).await;
     }
+    emit_app_state(&app, &services);
+    result
+}
+
+/// 调试触发：无条件使用 refresh_token 刷新会话，结果写入日志供分析。
+/// 成功即持久化新的 access_token / refresh_token。
+#[tauri::command]
+pub async fn test_refresh(
+    app: AppHandle,
+    services: State<'_, AppServices>,
+) -> Result<(), PublicError> {
+    let result = services.refresh_session_now().await;
     emit_app_state(&app, &services);
     result
 }
@@ -152,10 +164,18 @@ pub async fn set_bar_visible(
     Ok(())
 }
 
+/// 用系统默认方式打开最新一次运行的日志文件，便于排查续期/刷新问题。
 #[tauri::command]
-pub fn copy_diagnostics(services: State<'_, AppServices>) -> Result<(), PublicError> {
-    let diagnostics = diagnostics::build_diagnostics(&services);
-    diagnostics::copy_text_to_clipboard(&diagnostics)
+pub fn open_log_file(app: AppHandle, services: State<'_, AppServices>) -> Result<(), PublicError> {
+    let log_path = services.paths().logs_dir().join("sevnx-monitor.log");
+    app.opener()
+        .open_path(log_path.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|_| {
+            PublicError::new(
+                crate::api::error::PublicErrorCode::Internal,
+                "无法打开日志文件",
+            )
+        })
 }
 
 /// The real exit operation is intentionally kept in the tray handler. A web

@@ -4,12 +4,29 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::Utc;
+use chrono::Local;
 
 use crate::security::redact::redact_text;
 
 const MAX_LOG_BYTES: u64 = 512 * 1024;
 const RETAINED_FILES: u8 = 3;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LogLevel {
+    Info,
+    Error,
+    Critical,
+}
+
+impl LogLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Info => "INFO",
+            LogLevel::Error => "ERROR",
+            LogLevel::Critical => "CRITICAL",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct SafeLog {
@@ -26,7 +43,22 @@ impl SafeLog {
     /// callers from accidentally sending an API body, request header, cookie,
     /// token, or account field to the log sink.
     pub(crate) fn write(&self, event: &'static str, detail: &'static str) {
-        self.write_line(event, detail);
+        self.write_line(LogLevel::Info, event, detail);
+    }
+
+    pub(crate) fn write_critical(&self, event: &'static str, detail: &'static str) {
+        self.write_line(LogLevel::Critical, event, detail);
+    }
+
+    pub(crate) fn write_error(&self, event: &'static str, detail: &'static str) {
+        self.write_line(LogLevel::Error, event, detail);
+    }
+
+    /// Same as [`write`](Self::write) but accepts a caller-formatted detail
+    /// string. Only for non-sensitive metadata (timestamps, remaining seconds)
+    /// that SafeLog itself formats; the redaction pass still applies.
+    pub(crate) fn write_dynamic(&self, event: &'static str, detail: String) {
+        self.write_line(LogLevel::Info, event, &detail);
     }
 
     pub(crate) fn write_login_api_path(&self, path: &str) {
@@ -39,16 +71,17 @@ impl SafeLog {
             self.write("login_request_path_rejected", "reason=invalid_path");
             return;
         }
-        self.write_line("login_request_path", &format!("api_path={path}"));
+        self.write_line(LogLevel::Info, "login_request_path", &format!("api_path={path}"));
     }
 
-    fn write_line(&self, event: &'static str, detail: &str) {
+    fn write_line(&self, level: LogLevel, event: &'static str, detail: &str) {
         let _ = fs::create_dir_all(&self.directory);
         let path = self.directory.join("sevnx-monitor.log");
         rotate_if_needed(&path);
         let safe_line = redact_text(&format!(
-            "{} event={} detail={}\n",
-            Utc::now().to_rfc3339(),
+            "{} [{}] event={} detail={}\n",
+            Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            level.as_str(),
             event,
             detail,
         ));

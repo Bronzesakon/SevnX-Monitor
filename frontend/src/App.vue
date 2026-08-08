@@ -92,6 +92,8 @@ function scheduleWindowSize(): void {
     const error = shell.value?.querySelector<HTMLElement>('.action-error')
     const section = shell.value?.querySelector<HTMLElement>('.section-surface')
     if (!section) return
+    // 按“顶部栏 + 红色提示 + 当前视图内容”精确累加，切换视图时高度随内容
+    // 动态调整，底部不留大片空白；提示出现/消失时也计入高度。
     const height = (header?.offsetHeight ?? 0) + (error?.offsetHeight ?? 0) + section.scrollHeight + 2
     try {
       await setMainWindowHeight(height)
@@ -117,6 +119,9 @@ onMounted(async () => {
 
 watch(() => app.settings.theme, applyTheme)
 watch([() => app.activeView, () => app.usagePanel, () => app.snapshot, () => app.initialized], scheduleWindowSize, { deep: true })
+// `.action-error` 出现/消失会改变文档流高度，但 `.app-shell` 高度固定为窗口
+// 高度，ResizeObserver 不会因此触发，必须显式重算窗口高度，否则底部按钮会被裁。
+watch(() => app.actionError, scheduleWindowSize)
 
 onBeforeUnmount(() => {
   unlistenNavigateSettings?.()

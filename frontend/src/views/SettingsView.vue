@@ -42,7 +42,7 @@ function updateInterval(event: Event): void {
     </div>
 
     <section class="settings-section">
-      <p class="settings-section__label">访问地址</p>
+      <p class="settings-section__label">显示与刷新</p>
       <div class="settings-list">
         <label class="settings-row settings-row--url">
           <span><strong>访问网址 URL</strong><small>用于登录、打开 Dashboard 和数据请求</small></span>
@@ -55,12 +55,6 @@ function updateInterval(event: Event): void {
             @change="app.saveSettings({ accessUrl: ($event.target as HTMLInputElement).value.trim() })"
           />
         </label>
-      </div>
-    </section>
-
-    <section class="settings-section">
-      <p class="settings-section__label">显示与刷新</p>
-      <div class="settings-list">
         <label class="settings-row">
           <span><strong>主题</strong><small>选择界面外观</small></span>
           <select :value="app.settings.theme" @change="updateTheme">
@@ -110,9 +104,10 @@ function updateInterval(event: Event): void {
     <section class="settings-section">
       <p class="settings-section__label">账户与诊断</p>
       <div class="settings-list settings-list--actions">
+        <button type="button" class="settings-action" @click="app.testRefreshToken"><span><strong>测试令牌续期</strong><small>触发一次 Refresh Token 刷新，写入日志供分析</small></span><AppIcon name="refresh" /></button>
         <button type="button" class="settings-action" @click="app.login"><span><strong>重新登录</strong><small>在应用内重新打开登录窗口</small></span><AppIcon name="login" /></button>
         <button type="button" class="settings-action" @click="app.openOfficialDashboard"><span><strong>打开 SevnX Dashboard</strong><small>使用系统默认浏览器</small></span><AppIcon name="external" /></button>
-        <button type="button" class="settings-action" @click="app.copyDiagnosticSummary"><span><strong>复制诊断信息</strong><small>仅包含脱敏环境与状态摘要</small></span><AppIcon name="copy" /></button>
+        <button type="button" class="settings-action" @click="app.openLogFile"><span><strong>打开日志文件</strong><small>用系统默认方式打开最新日志</small></span><AppIcon name="copy" /></button>
       </div>
     </section>
   </main>

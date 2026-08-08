@@ -1058,7 +1058,7 @@ input:focus-visible {
 }
 
 .settings-view {
-  padding: 12px 16px 24px;
+  padding: 12px 16px 14px;
 }
 
 .settings-titlebar {
@@ -1112,7 +1112,7 @@ input:focus-visible {
 .settings-row,
 .settings-action {
   display: flex;
-  min-height: 56px;
+  min-height: 52px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1154,21 +1154,23 @@ input:focus-visible {
 }
 
 .settings-row--url {
-  display: grid;
-  min-height: 78px;
-  align-items: initial;
-  gap: 8px;
-  padding: 11px 0 12px;
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
 }
 
 .settings-row--url > span:first-child {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .settings-row .url-input {
-  width: 100%;
+  flex: 0 0 auto;
+  width: calc(200px * 5 / 6);
   min-width: 0;
-  height: 34px;
+  height: 30px;
   padding: 0 10px;
   border: 1px solid var(--border-strong);
   border-radius: 5px;

@@ -2,7 +2,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     },
 };
 
@@ -10,6 +10,10 @@ const NO_LOGIN_ATTEMPT: u64 = 0;
 const LOGIN_COMMITTING_BIT: u64 = 1 << 63;
 const LOGIN_CANCELLED_BIT: u64 = 1 << 62;
 const LOGIN_ATTEMPT_MASK: u64 = !(LOGIN_COMMITTING_BIT | LOGIN_CANCELLED_BIT);
+/// access_token 剩余有效期低于该值时触发 /auth/refresh 预热。
+const RENEWAL_MARGIN_SECS: i64 = 30 * 60;
+/// 两次 refresh 尝试的最小间隔，避免在服务器不续期时反复空转。
+const RENEWAL_DEBOUNCE_SECS: i64 = 60;
 
 use tokio::sync::RwLock;
 
@@ -42,6 +46,7 @@ pub struct AppServices {
     login_capture_in_flight: AtomicBool,
     login_attempt_state: AtomicU64,
     login_profile: Mutex<Option<LoginProfile>>,
+    last_refresh_attempt: AtomicI64,
     safe_log: SafeLog,
 }
 
@@ -90,12 +95,18 @@ impl AppServices {
             login_capture_in_flight: AtomicBool::new(false),
             login_attempt_state: AtomicU64::new(NO_LOGIN_ATTEMPT),
             login_profile: Mutex::new(None),
+            last_refresh_attempt: AtomicI64::new(0),
             safe_log,
         })
     }
 
     pub fn snapshot(&self) -> AppSnapshot {
         self.state.snapshot()
+    }
+
+    /// 是否已持有 refresh_token（脱敏布尔），供诊断摘要展示自动续期状态。
+    pub fn has_refresh_token(&self) -> bool {
+        self.session.has_refresh_token()
     }
 
     pub fn paths(&self) -> &AppPaths {
@@ -142,9 +153,8 @@ impl AppServices {
     }
 
     pub async fn refresh_current(&self) -> Result<AppSnapshot, PublicError> {
+        self.renew_session_if_near_expiry().await;
         let range = self.usage_range().await;
-        self.safe_log
-            .write("refresh_started", usage_range_label(range));
         let query = match VerifiedUsageQuery::for_range(range) {
             Ok(query) => query,
             Err(error) => {
@@ -163,7 +173,6 @@ impl AppServices {
                     self.log_public_error("refresh_session_persist_failed", &error);
                     return Err(error);
                 }
-                self.safe_log.write("refresh_completed", "result=success");
                 Ok(snapshot)
             }
             Err(error) => {
@@ -172,6 +181,57 @@ impl AppServices {
                     self.delete_credentials("reason=refresh_auth_expired");
                 }
                 Err(error)
+            }
+        }
+    }
+
+    /// access_token 临近过期时，用 refresh_token 调 /auth/refresh 换新；
+    /// 成功即持久化新凭据。带去抖，避免在服务器不续期时反复空转。
+    async fn renew_session_if_near_expiry(&self) {
+        let Some(expires_at) = self.session.status().await.expires_at else {
+            return;
+        };
+        let remaining = (expires_at - chrono::Utc::now()).num_seconds();
+        // 记录当前会话过期时间与剩余秒数，便于持续对比续期是否如期推进。
+        self.safe_log.write_dynamic(
+            "session_expiry",
+            format!(
+                "expires={} remaining={}s",
+                expires_at.to_rfc3339(),
+                remaining
+            ),
+        );
+        if remaining > RENEWAL_MARGIN_SECS {
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let last = self.last_refresh_attempt.load(Ordering::Relaxed);
+        if now - last < RENEWAL_DEBOUNCE_SECS {
+            return;
+        }
+        self.last_refresh_attempt.store(now, Ordering::Relaxed);
+        // 到期前触发续期是正常但关键的事件，用 CRITICAL 等级标记。
+        self.safe_log
+            .write_critical("session_renewal_triggered", "reason=near_expiry");
+        match self.client.refresh_session().await {
+            Ok(()) => {
+                if let Err(error) = self.persist_current_session().await {
+                    self.log_public_error("session_refresh_credential_save_failed", &error);
+                } else {
+                    let new_expires = self.session.status().await.expires_at;
+                    self.safe_log.write_dynamic(
+                        "session_refresh_succeeded",
+                        format!(
+                            "result=success next_expires={}",
+                            new_expires
+                                .map(|value| value.to_rfc3339())
+                                .unwrap_or_default()
+                        ),
+                    );
+                }
+            }
+            Err(error) => {
+                self.log_public_error("session_refresh_failed", &error.to_public());
             }
         }
     }
@@ -290,6 +350,7 @@ impl AppServices {
         attempt: u64,
         cookie_header: Option<String>,
         authorization_header: Option<String>,
+        refresh_token: Option<String>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
         request_context: crate::auth::RequestContext,
     ) -> Result<Option<AppSnapshot>, PublicError> {
@@ -308,6 +369,7 @@ impl AppServices {
                 attempt,
                 cookie_header,
                 authorization_header,
+                refresh_token,
                 expires_at,
                 request_context,
             )
@@ -686,6 +748,38 @@ impl AppServices {
         }
     }
 
+    /// 调试用：无条件用 refresh_token 触发 `/auth/refresh`，把各环节结果写入日志
+    /// 供分析。与自动续期（仅临近过期才刷新）不同，这里忽略剩余时间直接执行。
+    pub async fn refresh_session_now(&self) -> Result<(), PublicError> {
+        let has_refresh = self.has_refresh_token();
+        // 用 event 名区分「是否持有 refresh_token」，避免 detail 里的
+        // "has_refresh_token=true/false" 被安全脱敏（正则误伤布尔值）。
+        self.safe_log.write(
+            if has_refresh {
+                "debug_refresh_started_with_token"
+            } else {
+                "debug_refresh_started_without_token"
+            },
+            "source=manual_test",
+        );
+        match self.client.refresh_session().await {
+            Ok(()) => {
+                if let Err(error) = self.persist_current_session().await {
+                    self.log_public_error("debug_refresh_persist_failed", &error);
+                    return Err(error);
+                }
+                self.safe_log
+                    .write("debug_refresh_completed", "result=success");
+                Ok(())
+            }
+            Err(error) => {
+                let public = error.to_public();
+                self.log_public_error("debug_refresh_failed", &public);
+                Err(public)
+            }
+        }
+    }
+
     async fn persist_current_session(&self) -> Result<(), PublicError> {
         let Some(session) = self.session.persisted_credentials().await else {
             return Ok(());
@@ -711,7 +805,7 @@ impl AppServices {
         // but retaining that invariant here protects logs if a future UI error
         // ever includes server- or user-supplied text.
         self.safe_log
-            .write(event, public_error_code_label(error.code));
+            .write_error(event, public_error_code_label(error.code));
     }
 }
 
@@ -811,17 +905,5 @@ fn login_request_context_label(
         (_, "basic", _, _) => "request=other auth_scheme=basic",
         (_, "other", _, _) => "request=other auth_scheme=other",
         _ => "request=other auth_scheme=none",
-    }
-}
-
-fn usage_range_label(range: UsageRange) -> &'static str {
-    match range {
-        UsageRange::Today => "range=today",
-        UsageRange::Yesterday => "range=yesterday",
-        UsageRange::Last24Hours => "range=last_24_hours",
-        UsageRange::Last7Days => "range=last_7_days",
-        UsageRange::Last14Days => "range=last_14_days",
-        UsageRange::Last30Days => "range=last_30_days",
-        UsageRange::ThisMonth => "range=this_month",
     }
 }

@@ -1,7 +1,6 @@
 use std::sync::OnceLock;
 
 use regex::Regex;
-use serde_json::Value;
 
 pub const REDACTED: &str = "[已脱敏]";
 
@@ -39,63 +38,6 @@ pub fn redact_text(input: &str) -> String {
             format!("{}{}", &captures[1], REDACTED)
         })
         .into_owned()
-}
-
-/// Recursively redact an already-parsed diagnostic value while keeping its
-/// structural shape useful for troubleshooting. Do not call this with an API
-/// response that is otherwise going to be retained; raw response bodies must
-/// remain transient and unlogged.
-pub fn redact_json(value: &Value) -> Value {
-    let mut redacted = value.clone();
-    redact_json_in_place(&mut redacted);
-    redacted
-}
-
-pub fn redact_json_in_place(value: &mut Value) {
-    match value {
-        Value::Object(object) => {
-            for (key, nested) in object.iter_mut() {
-                if is_sensitive_key(key) {
-                    *nested = Value::String(REDACTED.to_string());
-                } else {
-                    redact_json_in_place(nested);
-                }
-            }
-        }
-        Value::Array(values) => {
-            for nested in values {
-                redact_json_in_place(nested);
-            }
-        }
-        Value::String(text) => *text = redact_text(text),
-        _ => {}
-    }
-}
-
-pub fn is_sensitive_key(key: &str) -> bool {
-    let normalized = key
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase();
-    matches!(
-        normalized.as_str(),
-        "cookie"
-            | "setcookie"
-            | "authorization"
-            | "password"
-            | "secret"
-            | "apikey"
-            | "token"
-            | "accesstoken"
-            | "refreshtoken"
-            | "idtoken"
-            | "credential"
-            | "credentials"
-            | "session"
-            | "sessionid"
-            | "sessiontoken"
-    )
 }
 
 fn header_pattern() -> &'static Regex {
@@ -138,9 +80,7 @@ fn query_pattern() -> &'static Regex {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
-    use super::{REDACTED, redact_json, redact_text};
+    use super::{REDACTED, redact_text};
 
     #[test]
     fn diagnostic_text_never_keeps_test_credentials() {
@@ -173,19 +113,5 @@ mod tests {
         for secret in ["test-session-id", "test-session-token", "test-session"] {
             assert!(!output.contains(secret), "leaked {secret}");
         }
-    }
-
-    #[test]
-    fn json_redaction_recurses_without_losing_safe_context() {
-        let input = json!({
-            "endpoint": "/api/v1/usage/stats",
-            "nested": { "refreshToken": "test-refresh-token" },
-            "items": [{ "password": "test-password" }]
-        });
-
-        let output = redact_json(&input);
-        assert_eq!(output["endpoint"], "/api/v1/usage/stats");
-        assert_eq!(output["nested"]["refreshToken"], REDACTED);
-        assert_eq!(output["items"][0]["password"], REDACTED);
     }
 }

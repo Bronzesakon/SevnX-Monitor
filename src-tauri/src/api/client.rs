@@ -5,7 +5,7 @@ use std::{
 
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Utc};
 use reqwest::{
-    Client, StatusCode,
+    Client,
     header::{ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, COOKIE, REFERER, SET_COOKIE, USER_AGENT},
 };
 
@@ -229,6 +229,72 @@ impl SevnxApiClient {
         Ok(stats.into_snapshot(range, models, snapshot, Utc::now()))
     }
 
+    /// 用 refresh_token 调 `/auth/refresh` 换新 access_token + 轮换 refresh_token。
+    /// 成功后更新 Session 内存态；持久化由 AppServices 在成功刷新后统一落盘。
+    pub async fn refresh_session(&self) -> Result<(), ApiError> {
+        let credentials = self.session.request_credentials().await?;
+        let refresh_token = credentials
+            .refresh_token
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+            .ok_or(ApiError::MissingCredentials)?;
+        let default_origin = self
+            .default_api_origin
+            .lock()
+            .map(|origin| origin.clone())
+            .unwrap_or_else(|_| Endpoint::API_ORIGIN.to_owned());
+        let origin = credentials
+            .request_context
+            .api_origin
+            .as_deref()
+            .unwrap_or(default_origin.as_str());
+        let url = format!(
+            "{}{}",
+            origin.trim_end_matches('/'),
+            Endpoint::RefreshToken.path()
+        );
+        let response = self
+            .http
+            .post(&url)
+            .header(REFERER, dashboard_referer(origin))
+            .json(&serde_json::json!({ "refresh_token": refresh_token }))
+            .send()
+            .await
+            .map_err(classify_reqwest_error)?;
+        let status = response.status();
+        if !status.is_success() {
+            let error = ApiError::from_http_status(status.as_u16());
+            if error.is_auth_invalid() {
+                self.session.mark_expired().await;
+            }
+            return Err(error);
+        }
+        let body = response.bytes().await.map_err(classify_reqwest_error)?;
+        let value: serde_json::Value = serde_json::from_slice(&body).map_err(|_| {
+            ApiError::InvalidResponse {
+                endpoint: Endpoint::RefreshToken.path(),
+            }
+        })?;
+        let access_token = value["data"]["access_token"].as_str().map(str::to_owned);
+        let new_refresh_token = value["data"]["refresh_token"].as_str().map(str::to_owned);
+        let expires_at = value["data"]["expires_in"]
+            .as_i64()
+            .map(|secs| Utc::now() + ChronoDuration::seconds(secs));
+        let Some(access_token) = access_token else {
+            return Err(ApiError::InvalidResponse {
+                endpoint: Endpoint::RefreshToken.path(),
+            });
+        };
+        self.session
+            .apply_refreshed_credentials(
+                Some(format!("Bearer {access_token}")),
+                new_refresh_token,
+                expires_at,
+            )
+            .await;
+        Ok(())
+    }
+
     async fn parse_or_expire<T>(&self, result: Result<T, ApiError>) -> Result<T, ApiError> {
         match result {
             Ok(value) => Ok(value),
@@ -394,9 +460,4 @@ fn classify_reqwest_error(error: reqwest::Error) -> ApiError {
     } else {
         ApiError::Network
     }
-}
-
-#[allow(dead_code)]
-fn is_success(status: StatusCode) -> bool {
-    status.is_success()
 }
