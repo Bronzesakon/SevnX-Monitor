@@ -116,6 +116,19 @@ SevnX 本地 HTTP 服务只保留 **2 个端点**：
    轮询间隔与 `auto_refresh` 对齐（可见 30s）。
 4. **样式参考**：`.codex-plus-menu-floating`——`position:fixed` + 高 `z-index` + `-webkit-app-region: no-drag`。
 
+### 数据推送通道（可选，加入方案 · 已定稿）
+目标：把显示延迟从"最多一个轮询周期(30s)"降到"SevnX 刷新后准实时到达"。
+
+| 方案 | 说明 | 选中 |
+| --- | --- | --- |
+| **long-poll** | 注入 JS 循环发 `GET /sevnx/overlay/poll?rev=<lastRev>`，SevnX 有新数据立即返回，无则**挂起**到超时(30s)再让 JS 重发。普通 HTTP 即可，实现最简单 | ✅ 推荐 |
+| SSE | `GET /sevnx/overlay/stream`，`EventSource` 订阅，SevnX 推送。需连接保持与重连语义 | 次选 |
+
+- **服务端（Rust）**：`AppState` 增加**数据版本 `rev`**，每次 `replace_success` 递增（`last_success_at` 可作为 rev 的替代）。`/poll` 校验 token 后，若当前 `rev > 请求的 rev` 立即返回新 payload；否则经 `tokio watch`/`Notify` 等待，直到新数据或 30s 超时。
+- **注入 JS**：收到新 payload 即渲染；网络错误 / 超时 → 短退避后重发（与断联判定共用"连续失败"逻辑，见 §13）。
+- **与轮询互斥**：优先走 long-poll；SevnX 断联（fetch 持续失败）时注入 JS 自动降级为轮询并置「已断联」。
+- **安全**：`/poll` 与 `/overlay` 同一 token、同一 CORS 约束（见 §12）。
+
 ---
 
 ## 6. 界面风格与 Codex 原生一致（已确认重点）
@@ -163,6 +176,9 @@ SevnX 本地 HTTP 服务只保留 **2 个端点**：
 
 ## 8. 小窗内容建议（已确认）
 
+- **载体（已定稿）**：小窗 = **注入在 Codex 页内的 DOM 浮层**（与横条同源），不是 SevnX 自有 WebView 窗口。
+  深色令牌样式天然一致，交互（刷新 / 打开登录）走本地 HTTP action 委托 SevnX，符合整套注入架构。
+
 按优先级：
 - **顶部**：账户状态（已登录/未登录/已失效）+ 余额。
 - **三个主量**（与横条一致，放大）：余额、今日消费、今日 Token。
@@ -200,7 +216,103 @@ SevnX 本地 HTTP 服务只保留 **2 个端点**：
 
 ---
 
-## 12. 补充未讨论点（健壮性 / 安全 / 体验 / 生命周期）
+## 12. token 生命周期与验证方案（已定稿）
+
+### 威胁模型（token 防谁）
+- token 是服务端对"请求来自被注入 JS"的**共享密钥校验**，真正防的是**浏览器里的其他网页**，不防本机管理员级进程。
+- 跨站 `fetch('http://127.0.0.1:PORT/...')` 发不起自定义 header（simple request 限制），且带 token 会触发 CORS 预检被拦。
+- 本机恶意进程（同用户）不被浏览器限制，能抓包/读内存拿到 token——真正的防线是**数据低敏**（overlay 只出三个量 + auth + 时间戳）+ 随机端口 + 不落日志。
+
+### 设计要点
+| 项 | 设计 |
+| --- | --- |
+| 身份 | 随机 token（32 字节 crypto），`Authorization: Bearer <token>` 校验 |
+| 生命周期 | 绑定 SevnX 进程。每次启动生成新 token，SevnX 退出即失效（server 停，token 无名） |
+| 存储 | **只在 SevnX 进程内存，不落盘**。校验端在进程内，重启后旧 token 无意义，无需持久化 |
+| 下发 | 通过 CDP 注入脚本时，把 `{overlayPort, token}` 作为注入参数传给横条 JS（浏览器 sandbox 读不了本地文件，注入是唯一可靠通道） |
+| CORS | token 在 header，`Access-Control-Allow-Origin: *` 安全（跨站不带 token → 401）。**此约束与 token 强耦合**：一旦去掉 token 或改 Origin 白名单，必须同步收紧 CORS |
+
+### metadata 只存端口，不存 token
+- `overlayPort`：SevnX 自己的本地 HTTP 随机端口。
+- `debugPort`：Codex 的 CDP 调试端口（快捷方式固定，如 9229）。
+- token 每次注入新生成，只进内存，不落 metadata。
+
+## 13. 断联重连与自定义协议拉起（已定稿）
+
+### 场景约束（与 Codex++ 的本质差异）
+- SevnX 是**常驻托盘独立进程**：SevnX 退出**不**杀 Codex；SevnX 启动**不**假设 Codex 在跑。
+- Codex++ 是 launcher 进程，helper 与 launcher 同生共死——它靠"进程同生共死"绕开了"宿主重启但 Codex 还在跑"的状态。SevnX 必须**额外实现"重启后重连"**。
+
+### 断联判定
+- SevnX 退出 → overlay server 停 → 横条 `fetch` 失败（ECONNREFUSED）。
+- 用"连续 N 次失败 + 超时"才置「已断联」，避免瞬时抖动误报。
+
+### 断联 → 重连闭环
+```
+SevnX 退出 → overlay server 停 → 横条 fetch 失败 → 状态=已断联
+     ↓ 用户点击横条「重新连接 SevnX」
+     ↓ 触发 sevnx://relaunch?dbg=9229 自定义协议 → OS 拉起 sevnx.exe
+     ↓ SevnX 启动 → 恢复 session → 读 metadata.debugPort
+     ↓ list_targets 探测 Codex 仍在 → 注入新脚本(新overlayPort+新token) → 覆盖旧横条
+     ↓ 横条恢复为实时数据
+```
+
+### 重连触发策略（统一为一条启动逻辑）
+- SevnX **每次启动都尝试探测 debugPort 并重注入**（不带协议参数）。既覆盖"横条点击拉起"，也覆盖"用户手动打开 SevnX 而 Codex 已在跑"，最省心。
+
+### 自定义协议分工（纠正"读注册表"误区）
+- 浏览器 sandbox 限制：注入 JS **读不了注册表、执行不了 exe**。故"读注册表拿安装路径再 exec"在 JS 侧不可行。
+- 横条 JS 唯一能拉起外部进程的通道 = OS 级系统触发（自定义 URI 协议）。
+- 注册表只承担"协议→exe"映射（`HKCU\Software\Classes\sevnx\shell\open\command = "…\sevnx.exe" "%1"`），路径映射由 OS 完成，横条 JS 全程接触不到路径。
+- SevnX 自装路径用 `std::env::current_exe()` 即可，Rust 侧无需读注册表。
+
+### 实测方式（分两步）
+1. **Rust/系统侧**：`reg add` 注册协议 → `start sevnx://relaunch?dbg=9229` 拉起 exe 并收到参数。
+2. **Codex 侧**：用 CDP 触发横条 JS 动作，观察三件事：
+   - 是否弹「打开此应用」确认框（Electron 默认会弹）；
+   - 是否导致当前 Codex 页面被导航/报错——**用 `window.open` 或隐藏 `<a>`+click，勿用 `location.href = …`**；
+   - 是否成功拉起 sevnx.exe。
+
+### 确认框处理（Electron 同类）
+- `ExternalProtocolDialogShowAlwaysOpenCheckbox`：给确认框加"始终允许"勾选。
+- `AutoOpenAllowedForURLs` / `AutoOpenProtocolsFromOrigins`：对 `app://-` 来源直接放行，不弹框。
+- 通过已有的 codex 启动参数通道注入（复用 `--remote-debugging-port` 之外的命令行参数）。
+
+### 备选方案对比
+| 方案 | 可行性 | 备注 |
+| --- | --- | --- |
+| 自定义协议 `sevnx://relaunch` | ✅ 推荐 | 标准可靠；注册表映射由 OS 处理；带 `?dbg=` 直接传端口 |
+| 读注册表拿路径再 exec | ❌ JS 侧不可行 | sandbox 限制；Rust 侧自装用 `current_exe()` 即可 |
+| 文件关联（`.sevnxlink`） | ⚠️ 冗余 | 需维护关联，`file://` 在 Electron 可能被拦 |
+| Electron `shell.openExternal` | ⚠️ 不建议 | 需侵入 Codex 的 ipcRenderer，脆弱 |
+
+### 结论
+横条侧只保留自定义协议一条主通道：`window.open` / 隐藏 `<a>` 触发、带 `?dbg=` 传端口，配合 `AutoOpenProtocolsFromOrigins` 策略免确认框。
+
+### 实测结论（已完成验证）
+- 协议注册结构（HKCU 用户级，无需管理员）：
+  - `HKCU\Software\Classes\sevnx` 默认值 `URL:sevnx Protocol`
+  - `HKCU\Software\Classes\sevnx` 下 `URL Protocol`（REG_SZ 空值）——**缺它才报"需要新的应用"**
+  - `HKCU\Software\Classes\sevnx\shell\open\command` 默认值 = `"<exe路径>" "%1"`
+- **exe 文件名是连字符 `sevnx-monitor.exe`**（release 目录），dll 才是下划线 `sevnx_monitor.dll`，勿混用。
+- 触发用 cmd 的 `start "" "sevnx://relaunch?dbg=9229"`（ShellExecute）；PowerShell 的 `Start-Process`/`.NET Process.Start` 对协议 URL 不可靠。
+- 路径无空格时可省略 exe 的内嵌引号；cmd 里 `^"` 转义引号不可靠，路径有空格时应改用安装器变量或 `winreg` 自写。
+
+### SevnX 侧 argv 监听设计（协议传来的数据在 SevnX 这边解析）
+Windows 通过协议拉起 exe 时，把**完整 URL 作为命令行参数**传给 `sevnx-monitor.exe`（`sevnx://relaunch?dbg=9229` 整串进 argv）。SevnX 覆盖两种场景：
+| 场景 | 处理位置 | 动作 |
+| --- | --- | --- |
+| SevnX **未运行**，协议首次拉起 | 启动时读 `std::env::args()` | 识别 `sevnx://relaunch?dbg=PORT` → 提取 PORT → 走"启动后探测该端口并重注入" |
+| SevnX **已在运行**（托盘常驻），再次触发协议 | `single-instance` 插件 `on_new_instance` 回调（`src-tauri/src/lib.rs` 已有，L25-27） | 同样解析 argv → 触发重连注入 |
+
+### 安装器注册协议（正式分发，替代命令行）
+- **推荐**：安装器写 + 卸载器删。
+  - NSIS：`WriteRegStr` 写入 `HKCR\...\sevnx` 三处 / 卸载 `DeleteRegKey "HKCU\Software\Classes\sevnx"`。
+  - WiX：`<RegistryValue>` 元素 / 卸载自动清理。
+  - 路径用安装目录变量（如 Tauri 的 `$INSTDIR\sevnx-monitor.exe`），兼容安装路径含空格。
+- **次选**：Rust 首次启动用 `winreg` crate 自注册（检测未注册则写）；卸载时安装器需额外清理，否则可能残留。
+
+## 14. 补充未讨论点（健壮性 / 安全 / 体验 / 生命周期）
 
 ### 架构与健壮性
 1. **多窗口/target**：Codex 可能有主窗口 + quick-chat / avatar-overlay 页面（参考 Codex++ `cdp.rs`），只注入主界面，防重复注入。
@@ -210,36 +322,38 @@ SevnX 本地 HTTP 服务只保留 **2 个端点**：
 5. **端口冲突 / 附加已运行实例**：调试端口被占用时的回退；Codex 已运行但未带调试端口时的处理。
 
 ### 安全与合规
-6. **CORS/CSP**：本地 server 返回 `Access-Control-Allow-Origin: *`，否则注入 JS 的 fetch 被 CSP 拦截。
-7. **token 管理**：随机 token 安全生成、随启动轮换、只 bind loopback、绝不写日志。
+6. **CORS/CSP**（已在 §12 定稿）：token 在 header，`Access-Control-Allow-Origin: *` 才安全；若改 Origin 白名单需同步收紧。
+7. **token 管理**（已在 §12 定稿）：随机 token 安全生成、绑定进程生命周期轮换、只 bind loopback、只进内存不落盘、绝不写日志。
 8. **白名单 payload**：overlay 只出三个量 + auth + 时间戳，不泄露 `api_keys`、user ID 等。
 
 ### 体验与降级
-9. **刷新频率**：注入 JS 轮询与 `auto_refresh` 对齐，用 `fetchedAt` 判断变化，避免空转。
-10. **错误态展示**：auth 失效 / 网络失败 / 数据为 null 时分别显示（`--`、stale 时间戳、重试）。
+9. **刷新频率**（已定稿，见 §5「数据推送通道」）：long-poll 推送为主，轮询为降级兜底。
+10. **错误态展示**：auth 失效 / 网络失败 / 数据为 null 时分别显示（`--`、stale 时间戳、重试）；**SevnX 退出时横条置「已断联」并可点击重拉**（见 §13）。
 11. **未安装 Codex / 找不到 app_dir**：快捷方式点击后的引导提示。
 
 ### 生命周期与分发
-12. **卸载/清理**：移除快捷方式、停止注入、清理 metadata 文件。
-13. **打包安装**：参考 Codex++ `CodexPlusPlus.nsi` 集成快捷方式与启动项。
+12. **卸载/清理**：移除快捷方式、停止注入、清理 metadata 文件、**删除 `sevnx://` 协议注册**。
+13. **打包安装**：参考 Codex++ `CodexPlusPlus.nsi` 集成快捷方式、启动项、**`sevnx://` 协议注册**。
 
 ### 测试
 14. **单元测试**：cdp target 解析、cookie 续期逻辑、overlay payload 白名单（断言不含敏感字段）。
-15. **手动验证矩阵**：深浅色切换、多窗口、Codex 刷新后重注入、登录/登出状态切换。
+15. **手动验证矩阵**：深浅色切换、多窗口、Codex 刷新后重注入、登录/登出状态切换、**SevnX 退出→横条断联→点击协议重拉→重注入恢复**。
 
-> 其中第 1、6、7 条（多 target、CORS、token 安全）是最易踩坑、建议优先设计。
+> 其中第 1、6、7 条（多 target、CORS、token 安全）是最易踩坑、建议优先设计；第 6、7 条已定稿，见 §12。
 
 ---
 
-## 13. 落地顺序（分两步，各自可独立验证）
+## 15. 落地顺序（分两步，各自可独立验证）
 
 1. **第一步：本地 HTTP 暴露层**（不动注入）——新增 server + 端点 + 安全，
    用 `curl http://127.0.0.1:<port>/sevnx/overlay` 验证数据正确且不泄露敏感字段。
 2. **第二步：注入脚本 + 数据联通 + 界面**——CDP 注入、按钮/横条、轮询渲染、登录动作、重注入 watchdog。
+3. **第三步（建议穿插）：假 Codex 联调**——先用裸 Chromium/Electron 带 `--remote-debugging-port` 验证
+   CDP 注入 + fetch 本地 HTTP + 断联重拉协议，再动真 Codex，降低迭代成本。
+4. **第四步：断联重拉验证**——注册 `sevnx://relaunch` 协议 → 退出 SevnX → 横条置「已断联」→
+   点击触发协议 → 确认拉起 exe 并拿到 `?dbg=` 参数 → SevnX 启动后探测重注入恢复。
 
----
-
-## 14. 风险与边界
+## 16. 风险与边界
 
 - **未带调试端口的 Codex 无法注入**：需由 SevnX 负责启动 Codex（带 `--remote-debugging-port`）或附加已有实例。
 - **CSP/网络**：Codex 渲染进程对 `127.0.0.1` 的 fetch 可行（Codex++ helper 模式已验证）。
