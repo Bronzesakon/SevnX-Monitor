@@ -21,3 +21,6 @@ target/
 # Local specification and archived prototype sources
 /PROJECT_SPEC.md
 /RAW_MimoDesktopAssistant/
+
+# Engineering memory / design docs (kept local, not versioned)
+/docs/
