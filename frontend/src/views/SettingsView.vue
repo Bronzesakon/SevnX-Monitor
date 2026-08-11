@@ -3,10 +3,12 @@ import { ref, watch } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import ToggleSwitch from '../components/ToggleSwitch.vue'
 import { useAppStore } from '../stores/app'
+import type { ShortcutLocation } from '../lib/ipc'
 import type { AlertInterval, ThemeMode } from '../types/contracts'
 
 const app = useAppStore()
 const threshold = ref(String(app.settings.lowBalanceThreshold))
+const shortcutLocation = ref<ShortcutLocation>('desktop')
 
 watch(() => app.settings.lowBalanceThreshold, (value) => {
   threshold.value = String(value)
@@ -38,7 +40,16 @@ function updateInterval(event: Event): void {
         <span>返回</span>
       </button>
       <h1>设置</h1>
-      <span aria-hidden="true" />
+      <div class="shortcut-toolbar">
+        <select v-model="shortcutLocation" class="shortcut-location" aria-label="快捷方式位置">
+          <option value="desktop">桌面</option>
+          <option value="startMenu">开始菜单</option>
+        </select>
+        <button class="shortcut-button" type="button" title="在所选位置创建可注入状态横条的 Codex 快捷方式" @click="app.createCodexShortcut(shortcutLocation)">
+          <AppIcon name="codex" :size="15" />
+          <span>创建快捷方式</span>
+        </button>
+      </div>
     </div>
 
     <section class="settings-section">
@@ -63,10 +74,6 @@ function updateInterval(event: Event): void {
             <option value="system">跟随系统</option>
           </select>
         </label>
-        <div class="settings-row">
-          <span><strong>自动刷新</strong><small>按窗口可见状态安排刷新</small></span>
-          <ToggleSwitch :model-value="app.settings.autoRefresh" label="自动刷新" @update:model-value="app.saveSettings({ autoRefresh: $event })" />
-        </div>
         <div class="settings-row">
           <span><strong>显示吸附横条</strong><small>横条始终置顶，可拖动吸附</small></span>
           <ToggleSwitch :model-value="app.settings.barVisible" label="显示吸附横条" @update:model-value="app.saveSettings({ barVisible: $event })" />

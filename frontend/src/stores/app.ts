@@ -2,8 +2,10 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
+  createCodexShortcut as createCodexShortcutIpc,
   getAppSnapshot,
   getSettings,
+  launchCodex as launchCodexIpc,
   listenForAuthStatus,
   listenForRefreshStatus,
   listenForSettings,
@@ -17,6 +19,7 @@ import {
   testRefresh,
   updateSettings,
 } from '../lib/ipc'
+import type { ShortcutLocation } from '../lib/ipc'
 import type {
   AppSettings,
   AppSnapshot,
@@ -27,6 +30,11 @@ import type {
 
 export type MainView = 'dashboard' | 'usage' | 'settings'
 export type UsagePanel = 'trend' | 'models' | 'groups' | 'endpoints'
+
+const shortcutLocationLabel: Record<ShortcutLocation, string> = {
+  desktop: '桌面',
+  startMenu: '开始菜单',
+}
 
 const defaultSettings: AppSettings = {
   accessUrl: 'https://www.sevnx.lol',
@@ -41,6 +49,12 @@ const defaultSettings: AppSettings = {
 
 function publicMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message
+  // Tauri 命令返回的 PublicError 会序列化为普通对象 { code, message }，
+  // 不是 Error 实例，需单独透传其 message，否则用户只能看到兜底文案。
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message) return message
+  }
   return '暂时无法完成操作，请稍后重试。'
 }
 
@@ -133,7 +147,8 @@ export const useAppStore = defineStore('app', () => {
 
   async function saveSettings(patch: Partial<AppSettings>): Promise<void> {
     const previous = settings.value
-    const next = { ...settings.value, ...patch }
+    // 自动刷新保持常开，不再提供关闭入口
+    const next = { ...settings.value, ...patch, autoRefresh: true }
     settings.value = next
     actionError.value = null
     try {
@@ -142,6 +157,36 @@ export const useAppStore = defineStore('app', () => {
       if (patch.barVisible !== undefined) await setBarVisible(patch.barVisible)
     } catch (error) {
       settings.value = previous
+      actionError.value = publicMessage(error)
+    }
+  }
+
+  async function launchCodex(): Promise<void> {
+    if (pending.value) return
+    pending.value = true
+    actionError.value = null
+    try {
+      const notice = await launchCodexIpc()
+      toast.value = notice
+      window.setTimeout(() => {
+        toast.value = null
+      }, 2600)
+    } catch (error) {
+      actionError.value = publicMessage(error)
+    } finally {
+      pending.value = false
+    }
+  }
+
+  async function createCodexShortcut(location: ShortcutLocation = 'desktop'): Promise<void> {
+    actionError.value = null
+    try {
+      await createCodexShortcutIpc(location)
+      toast.value = `已在${shortcutLocationLabel[location]}创建 Codex 快捷方式`
+      window.setTimeout(() => {
+        toast.value = null
+      }, 2600)
+    } catch (error) {
       actionError.value = publicMessage(error)
     }
   }
@@ -206,6 +251,8 @@ export const useAppStore = defineStore('app', () => {
     runRefresh,
     selectUsageRange,
     saveSettings,
+    launchCodex,
+    createCodexShortcut,
     login,
     testRefreshToken,
     openOfficialDashboard,

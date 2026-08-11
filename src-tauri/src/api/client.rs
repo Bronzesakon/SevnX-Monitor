@@ -120,7 +120,7 @@ impl SevnxApiClient {
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(20))
-            .user_agent("SevnX-Monitor/0.1")
+            .user_agent("SevnX-Monitor/1.0.0")
             .build()
             .map_err(|_| ApiError::HttpStatus)?;
         Ok(Self {
@@ -232,12 +232,10 @@ impl SevnxApiClient {
     /// 用 refresh_token 调 `/auth/refresh` 换新 access_token + 轮换 refresh_token。
     /// 成功后更新 Session 内存态；持久化由 AppServices 在成功刷新后统一落盘。
     pub async fn refresh_session(&self) -> Result<(), ApiError> {
-        let credentials = self.session.request_credentials().await?;
-        let refresh_token = credentials
-            .refresh_token
-            .as_deref()
-            .filter(|token| !token.trim().is_empty())
-            .ok_or(ApiError::MissingCredentials)?;
+        // Do not use `request_credentials` here: it correctly rejects an
+        // expired access token for normal API calls, but that expiry is exactly
+        // when `/auth/refresh` must still be allowed to run.
+        let credentials = self.session.refresh_credentials().await?;
         let default_origin = self
             .default_api_origin
             .lock()
@@ -257,7 +255,7 @@ impl SevnxApiClient {
             .http
             .post(&url)
             .header(REFERER, dashboard_referer(origin))
-            .json(&serde_json::json!({ "refresh_token": refresh_token }))
+            .json(&serde_json::json!({ "refresh_token": credentials.refresh_token }))
             .send()
             .await
             .map_err(classify_reqwest_error)?;

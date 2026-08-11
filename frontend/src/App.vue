@@ -164,6 +164,7 @@ onBeforeUnmount(() => {
             <span class="refresh-status__dot" />
             <span>{{ refreshLabel }}</span>
           </div>
+          <IconButton icon="codex" label="打开带状态窗的 Codex" :disabled="app.pending" @click="app.launchCodex" />
           <IconButton icon="refresh" label="手动刷新" :spinning="displayRefresh === 'refreshing'" :disabled="app.pending || displayRefresh === 'refreshing'" @click="app.runRefresh" />
           <IconButton icon="settings" label="设置" :active="app.activeView === 'settings'" @click="app.activeView = 'settings'" />
           <IconButton icon="close" label="隐藏到托盘" @click="hideWindow" />

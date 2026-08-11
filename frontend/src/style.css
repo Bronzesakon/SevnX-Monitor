@@ -1063,7 +1063,7 @@ input:focus-visible {
 
 .settings-titlebar {
   display: grid;
-  grid-template-columns: 62px 1fr 62px;
+  grid-template-columns: 62px 1fr auto;
   align-items: center;
   min-height: 32px;
   margin-bottom: 16px;
@@ -1091,6 +1091,45 @@ input:focus-visible {
 
 .back-button:hover {
   color: var(--text);
+}
+
+.shortcut-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shortcut-location {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.shortcut-location:hover {
+  border-color: var(--accent);
+}
+
+.shortcut-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.shortcut-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .settings-section + .settings-section {
@@ -1286,7 +1325,8 @@ input:focus-visible {
   position: absolute;
   z-index: 8;
   right: 16px;
-  bottom: 16px;
+  top: 60px;
+  max-width: min(420px, calc(100% - 32px));
   padding: 8px 10px;
   border: 1px solid var(--border-strong);
   border-radius: 5px;

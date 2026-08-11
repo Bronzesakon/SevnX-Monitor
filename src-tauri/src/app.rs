@@ -15,7 +15,7 @@ const RENEWAL_MARGIN_SECS: i64 = 30 * 60;
 /// 两次 refresh 尝试的最小间隔，避免在服务器不续期时反复空转。
 const RENEWAL_DEBOUNCE_SECS: i64 = 60;
 
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     api::{
@@ -24,7 +24,13 @@ use crate::{
     },
     auth::{CredentialStore, Session},
     model::{AppSettings, AppSnapshot, AppState, AuthStatus, UsageRange},
-    services::{logging::SafeLog, refresh_scheduler::RefreshCoordinator},
+    services::{
+        logging::SafeLog,
+        codex_inject,
+        overlay_server::{self, OverlayAction, OverlayServerInfo},
+        protocol,
+        refresh_scheduler::RefreshCoordinator,
+    },
     storage::{
         AppPaths, PersistedSettings, SettingsStore, StorageError, StoredAlertState,
         StoredBarPosition,
@@ -62,6 +68,17 @@ impl AppServices {
     pub fn new() -> Result<Self, StorageError> {
         let paths = AppPaths::discover()?;
         let safe_log = SafeLog::new(paths.logs_dir());
+        // Self-register the `sevnx://` protocol so Codex-overlay reconnect works
+        // on every machine. Idempotent and keeps the command path current.
+        if let Ok(exe) = std::env::current_exe() {
+            match protocol::register_sevnx_protocol(&exe) {
+                Ok(()) => safe_log.write("protocol_register_ok", "result=registered"),
+                Err(error) => safe_log.write_dynamic(
+                    "protocol_register_failed",
+                    format!("error={error}"),
+                ),
+            }
+        }
         let settings_store = SettingsStore::new(paths.settings_file());
         let persisted_settings = match settings_store.load() {
             Ok(settings) => settings,
@@ -111,6 +128,77 @@ impl AppServices {
 
     pub fn paths(&self) -> &AppPaths {
         &self.paths
+    }
+
+    /// Starts the loopback overlay HTTP server and persists only the port to
+    /// disk (the bearer token stays in memory, see design §12/§17-M1).
+    pub(crate) async fn start_overlay(
+        &self,
+        action_tx: mpsc::Sender<OverlayAction>,
+    ) -> Result<OverlayServerInfo, std::io::Error> {
+        let info = match overlay_server::spawn(self.state.clone(), self.safe_log.clone(), action_tx)
+            .await
+        {
+            Ok(info) => info,
+            Err(error) => {
+                self.safe_log
+                    .write_error("overlay_server_failed", "reason=bind_failed");
+                return Err(error);
+            }
+        };
+        self.write_overlay_meta(info.port);
+        self.safe_log
+            .write_dynamic("overlay_ready", format!("port={}", info.port));
+        Ok(info)
+    }
+
+    /// Exposes the shared audit sink so long-running tasks (e.g. the injection
+    /// watchdog) can log without owning the whole `AppServices`.
+    pub(crate) fn logger(&self) -> SafeLog {
+        self.safe_log.clone()
+    }
+
+    /// Injects the overlay UI into the Codex page listening on `debug_port`.
+    /// Data is delivered afterwards by the watchdog's CDP push, so nothing
+    /// secret ever enters the injected script.
+    pub(crate) async fn inject_codex_overlay(&self, debug_port: u16) -> Result<(), String> {
+        self.safe_log.write_dynamic(
+            "codex_inject_started",
+            format!("debug_port={debug_port}"),
+        );
+        codex_inject::inject_overlay(debug_port).await.map_err(|error| {
+            self.safe_log
+                .write_dynamic("codex_inject_failed", format!("error={error}"));
+            error
+        })?;
+        self.safe_log
+            .write("codex_inject_ok", "result=injected");
+        Ok(())
+    }
+
+    /// Whitelisted snapshot JSON for the CDP data push (bar + detail window).
+    pub(crate) fn overlay_push_json(&self) -> String {
+        overlay_server::detail_payload_json(&self.state.snapshot())
+    }
+
+    /// Wakes the injection watchdog as soon as a public overlay field changes.
+    pub(crate) async fn wait_for_overlay_update(&self) {
+        self.state.notify().notified().await;
+    }
+
+    fn write_overlay_meta(&self, port: u16) {
+        let path = self.paths.overlay_meta_file();
+        let json = serde_json::json!({ "overlayPort": port });
+        match serde_json::to_vec_pretty(&json) {
+            Ok(bytes) => {
+                if std::fs::write(&path, bytes).is_err() {
+                    self.safe_log.write("overlay_meta_write_failed", "reason=io");
+                }
+            }
+            Err(_) => self
+                .safe_log
+                .write("overlay_meta_write_failed", "reason=serialize"),
+        }
     }
 
     pub fn session(&self) -> Session {
@@ -192,15 +280,7 @@ impl AppServices {
             return;
         };
         let remaining = (expires_at - chrono::Utc::now()).num_seconds();
-        // 记录当前会话过期时间与剩余秒数，便于持续对比续期是否如期推进。
-        self.safe_log.write_dynamic(
-            "session_expiry",
-            format!(
-                "expires={} remaining={}s",
-                expires_at.to_rfc3339(),
-                remaining
-            ),
-        );
+        // 未接近到期时直接返回，不写日志，避免每 30s 刷屏。
         if remaining > RENEWAL_MARGIN_SECS {
             return;
         }
@@ -210,29 +290,96 @@ impl AppServices {
             return;
         }
         self.last_refresh_attempt.store(now, Ordering::Relaxed);
-        // 到期前触发续期是正常但关键的事件，用 CRITICAL 等级标记。
-        self.safe_log
-            .write_critical("session_renewal_triggered", "reason=near_expiry");
+        // 到期前触发续期是正常但关键的事件，用 CRITICAL 记一次，时间用本地时区。
+        let local_expires = expires_at.with_timezone(&chrono::Local);
+        self.safe_log.write_critical_dynamic(
+            "session_renewal_triggered",
+            format!(
+                "reason=near_expiry expires={}",
+                local_expires.format("%Y-%m-%d %H:%M:%S")
+            ),
+        );
         match self.client.refresh_session().await {
             Ok(()) => {
-                if let Err(error) = self.persist_current_session().await {
-                    self.log_public_error("session_refresh_credential_save_failed", &error);
-                } else {
-                    let new_expires = self.session.status().await.expires_at;
-                    self.safe_log.write_dynamic(
-                        "session_refresh_succeeded",
-                        format!(
-                            "result=success next_expires={}",
-                            new_expires
-                                .map(|value| value.to_rfc3339())
-                                .unwrap_or_default()
-                        ),
-                    );
-                }
+                self.persist_renewed_session("session_refresh_succeeded")
+                    .await;
             }
             Err(error) => {
-                self.log_public_error("session_refresh_failed", &error.to_public());
+                let public = error.to_public();
+                self.apply_session_refresh_failure(
+                    &error,
+                    public,
+                    "reason=session_refresh_auth_invalid",
+                )
+                .await;
+                self.safe_log
+                    .write("session_refresh_failed", refresh_failure_label(&error));
             }
+        }
+    }
+
+    /// Every restored login gets one unconditional refresh-token exchange
+    /// before the first dashboard request. The normal 30-minute pre-expiry
+    /// renewal remains in `renew_session_if_near_expiry` for the rest of the
+    /// process lifetime.
+    async fn renew_session_on_restore(&self) -> Result<(), ApiError> {
+        self.last_refresh_attempt
+            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        self.safe_log
+            .write_critical("session_startup_refresh_triggered", "source=restore");
+        match self.client.refresh_session().await {
+            Ok(()) => {
+                self.persist_renewed_session("session_startup_refresh_succeeded")
+                    .await;
+                Ok(())
+            }
+            Err(error) => {
+                self.safe_log.write(
+                    "session_startup_refresh_failed",
+                    refresh_failure_label(&error),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    async fn persist_renewed_session(&self, success_event: &'static str) {
+        if let Err(error) = self.persist_current_session().await {
+            self.log_public_error("session_refresh_credential_save_failed", &error);
+            return;
+        }
+        let next = self
+            .session
+            .status()
+            .await
+            .expires_at
+            .map(|value| {
+                value
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        self.safe_log
+            .write_dynamic(success_event, format!("result=success next_expires={next}"));
+    }
+
+    /// Keeps the public state in lockstep with a refresh-token failure. A
+    /// rejected token, or a session already cleared because its access token
+    /// expired, is terminal; transient failures retain the current session.
+    async fn apply_session_refresh_failure(
+        &self,
+        error: &ApiError,
+        public: PublicError,
+        delete_reason: &'static str,
+    ) -> bool {
+        if error.is_auth_invalid() || self.session.status().await.auth == AuthStatus::Expired {
+            self.delete_credentials(delete_reason);
+            self.state.mark_auth_expired(public);
+            true
+        } else {
+            self.state.mark_request_failure(public);
+            false
         }
     }
 
@@ -644,6 +791,19 @@ impl AppServices {
 
         self.session.restore_credentials(persisted).await;
         self.state.set_auth_status(AuthStatus::Validating);
+        if let Err(error) = self.renew_session_on_restore().await {
+            let public = error.to_public();
+            if self
+                .apply_session_refresh_failure(
+                    &error,
+                    public,
+                    "reason=restore_refresh_auth_invalid",
+                )
+                .await
+            {
+                return self.snapshot();
+            }
+        }
         if let Err(error) = self.refresh_current().await {
             self.state.retain_restored_session_after_failure(error);
         }
@@ -774,6 +934,12 @@ impl AppServices {
             }
             Err(error) => {
                 let public = error.to_public();
+                self.apply_session_refresh_failure(
+                    &error,
+                    public.clone(),
+                    "reason=debug_refresh_auth_invalid",
+                )
+                .await;
                 self.log_public_error("debug_refresh_failed", &public);
                 Err(public)
             }
@@ -851,6 +1017,21 @@ fn candidate_validation_error_label(error: &ApiError) -> &'static str {
         ApiError::BusinessRejected { .. } => "error=business_rejected",
         ApiError::InvalidResponse { .. } => "error=invalid_response",
         ApiError::MissingCredentials => "error=missing_credentials",
+    }
+}
+
+fn refresh_failure_label(error: &ApiError) -> &'static str {
+    match error {
+        ApiError::MissingCredentials => "reason=refresh_credential_missing",
+        ApiError::Unauthorized => "reason=refresh_credential_rejected",
+        ApiError::Forbidden => "reason=refresh_credential_forbidden",
+        ApiError::Network => "reason=network",
+        ApiError::Timeout => "reason=timeout",
+        ApiError::RateLimited => "reason=rate_limited",
+        ApiError::ServiceUnavailable => "reason=service_unavailable",
+        ApiError::HttpStatus => "reason=http_status",
+        ApiError::BusinessRejected { .. } => "reason=business_rejected",
+        ApiError::InvalidResponse { .. } => "reason=invalid_response",
     }
 }
 

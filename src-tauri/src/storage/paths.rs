@@ -33,6 +33,13 @@ impl AppPaths {
         self.root.join("logs")
     }
 
+    /// Transient overlay handshake metadata: overlay HTTP port + Codex debug
+    /// port. Written on startup, overwritten on the next launch. The bearer
+    /// token itself never persists here (see design §12/§17-M1).
+    pub fn overlay_meta_file(&self) -> PathBuf {
+        self.root.join("overlay.json")
+    }
+
     pub fn webview_profile_dir(&self) -> PathBuf {
         self.root.join("WebView2")
     }

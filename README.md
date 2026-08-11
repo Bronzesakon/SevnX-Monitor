@@ -1,5 +1,7 @@
 # SevnX Monitor
 
+**版本：1.0.0**
+
 SevnX Monitor 是一个独立的 Windows 10/11 桌面应用，用于查看 SevnX 账户余额、Dashboard 指标和聚合使用情况。应用使用 Tauri 2、Rust、Vue 3、Pinia、ECharts 和应用内 WebView2 登录。
 
 ## 功能概览
@@ -10,6 +12,13 @@ SevnX Monitor 是一个独立的 Windows 10/11 桌面应用，用于查看 SevnX
 - 数值采用统一的金额、Token 和耗时格式，长数值保留完整提示，便于快速识别账户状态与使用规模。
 - 启动时自动恢复已保存会话，并在后台统一更新 Dashboard 与使用记录；刷新期间保留完整界面和状态提示，网络波动时保留会话和最后一次有效数据。
 
+### 登录与会话续期
+
+- 登录在应用创建的独立 WebView2 窗口中完成，凭据由 Rust 后端捕获并验证，前端只接收脱敏后的状态和业务数据。
+- 会话文件使用 Windows DPAPI CurrentUser 加密保存。恢复会话后每次启动都会尝试一次 `refresh_token` 续期，即使旧 `access_token` 已经过期也会直接使用独立保存的 refresh token。
+- 后续按当前最新过期时间提前 30 分钟续期；每次服务端返回新的过期时间或轮换后的 refresh token，下一轮计时都会以新值重新计算。
+- 续期失败会记录脱敏原因。凭据缺失或被服务端拒绝时，状态会同步为“登录失效”，横条和展开详情立即更新，不继续显示“已登录”。设置页提供手动“测试令牌续期”和重新登录入口。
+
 ### 使用分析
 
 - 使用记录支持多个时间范围，可从 Token、消费、模型和分组维度查看聚合结果。
@@ -18,18 +27,51 @@ SevnX Monitor 是一个独立的 Windows 10/11 桌面应用，用于查看 SevnX
 
 ### 桌面体验
 
-- 支持浅色、深色与跟随系统主题，以及开机启动、刷新频率和低余额提醒等偏好设置。
+- 支持访问网址、浅色/深色/跟随系统主题、开机启动、独立吸附横条和低余额提醒等偏好设置。
 - 关闭主窗口后应用继续在系统托盘运行；左键托盘图标或菜单均可快速恢复窗口、刷新数据和打开设置。
 - 吸附横条以置顶紧凑视图展示余额、今日消费和今日 Token；可从任意内容区域拖动并自动吸附屏幕边缘，在 DPI、分辨率或显示器布局变化后也会保持在可用工作区内。
 - Windows 安装包提供标准安装与卸载体验，应用图标适配任务栏、系统托盘和高分辨率显示环境。
 
+### 诊断与可维护性
+
+- 关键生命周期写入结构化日志，包括协议注册、服务初始化、会话恢复/续期、Codex 激活、CDP 注入、渲染器重载、watchdog 重试和快捷方式创建。
+- 日志只保留事件名、状态、端口和错误类别等公开元数据；Cookie、access token、refresh token、Authorization header 和路径中的敏感参数都会脱敏。
+- overlay 服务仅绑定 `127.0.0.1` 随机端口，并以修订号推送最新快照，不开放局域网访问。
+
+### Codex 集成（注入余额横条）
+
+- 向 OpenAI Codex 桌面应用注入一个顶部横条，实时显示 **余额 / 今日消费 / 今日 Token**，点击可展开详情状态窗。
+- 通过 CDP（`--remote-debugging-port=9229`）注入 UI 脚本，数据由 Rust 侧**主动推送**进页面，绕开 Codex 页面的 CSP 限制。
+- 支持两种启动形态：Microsoft Store 版用 COM 激活 AUMID，独立安装版直接启动 exe；启动参数自动带上 `--remote-allow-origins`。
+- 横条优先直接插入 Codex header 的既有工具栏按钮组、排在第一个原生按钮之前；无项目页的按钮组缺失或裁切时改为右端锚定并向左展开，避免向右截断。真实 Codex 的窗口控制按钮位于原生标题栏（DOM 之外），故不覆盖三按钮。
+- **反向拉起**：注册 `sevnx://relaunch` 自定义协议，并可在桌面 / 开始菜单创建快捷方式；点击后拉取 SevnX 再注入横条。
+- 点击「打开带状态窗的 Codex」时检测运行状态：已运行则只注入并提示，未运行则启动并注入；保活 watchdog 每 5 秒检查并自动重注入。
+
+启动过渡阶段（Codex 空白页、渲染器重载或 header 尚未生成）不会显示右上角浮动横条；待稳定 header 或工具栏可用后才插入，避免遮挡和裁切。
+
 ## 正式目录
 
-- 仓库仅包含构建和运行所需的完整源代码、图标资源与构建脚本。
-- `src-tauri/`：Rust 后端、Tauri 窗口、WebView2 登录、DPAPI 凭证库、托盘、通知和 NSIS 配置。
-- `frontend/`：Vue 3 + TypeScript 用户界面；生产构建产物是 `frontend/dist/`。
-- `dev-build.bat`：根目录本地构建入口，构建前后端产物后直接启动 debug EXE。
-- `release-build.bat`：根目录发布构建入口，生成 release EXE 和 NSIS 安装包。
+| 路径 | 作用 |
+| --- | --- |
+| `frontend/` | Vue 3 + TypeScript + Pinia 用户界面；包含仪表盘、使用记录、设置、登录引导、吸附横条和图表组件。 |
+| `frontend/src/stores/app.ts` | 应用状态、刷新调度、登录、Codex 启动和快捷方式 IPC 调用。 |
+| `src-tauri/src/app.rs` | 后端服务容器、会话恢复、启动/临期令牌续期、设置和状态快照。 |
+| `src-tauri/src/api/` | SevnX API 客户端、响应解析和公开错误分类。 |
+| `src-tauri/src/auth/` | WebView2 登录、请求观察、Cookie/Token 捕获、会话验证与 DPAPI 凭证存储。 |
+| `src-tauri/src/model/` | Dashboard、Usage、设置和应用状态模型及格式化逻辑。 |
+| `src-tauri/src/services/auto_refresh.rs` | 后台数据刷新循环。 |
+| `src-tauri/src/services/refresh_scheduler.rs` | Dashboard 与 Usage 的并发刷新门控和结果合并。 |
+| `src-tauri/src/services/codex_launcher.rs` | Store/独立版 Codex 探测、激活、启动参数和进程检测。 |
+| `src-tauri/src/services/codex_inject.rs` | CDP 目标发现、脚本注入、异常诊断和 watchdog。 |
+| `src-tauri/src/services/overlay_server.rs` | 本地回环数据推送、登录/重连动作和状态轮询接口。 |
+| `src-tauri/src/services/protocol.rs` | `sevnx://relaunch` 协议注册、校验和参数解析。 |
+| `src-tauri/src/services/shortcut.rs` | 桌面与开始菜单快捷方式创建。 |
+| `src-tauri/resources/overlay.js` | Codex 页面内的横条、详情面板、原生样式提示和定位逻辑。 |
+| `src-tauri/src/services/tray.rs` | 系统托盘图标和菜单。 |
+| `src-tauri/src/services/logging.rs` | 脱敏结构化日志。 |
+| `src-tauri/tauri.conf.json` | Tauri 窗口、权限、图标和 NSIS 打包配置。 |
+| `dev-build.bat` | 构建前端并生成/启动 debug 版本。 |
+| `release-build.bat` | 生成 release EXE 和 NSIS 安装包。 |
 
 ## 开发环境
 
@@ -86,12 +128,16 @@ Set-Location E:\sevnX
 .\release-build.bat
 ```
 
-该脚本执行 TypeScript 检查，再运行 `cargo tauri build --bundles nsis`。发布二进制位于 `src-tauri/target/release/sevnx-monitor.exe`，NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。安装包使用应用标识 `com.sevnx.monitor`。
+该脚本执行 TypeScript 检查，再运行 `cargo tauri build --bundles nsis`。发布二进制位于 `src-tauri/target/release/sevnx-monitor.exe`，NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。安装包使用应用标识 `com.sevnx.monitor`，产品版本为 `1.0.0`。
 
 ## 安全与数据边界
 
 - 登录在应用创建的独立 WebView2 窗口内完成；打开官方 Dashboard 才交给系统默认浏览器。
 - Cookie/Token 仅保留在 Rust 内存和 `%LOCALAPPDATA%\SevnX Monitor\auth\session.bin` 的 DPAPI CurrentUser 密文中，绝不通过 IPC、前端、日志或诊断信息输出。
 - Dashboard 和 Usage 聚合快照仅存在于当前进程；不请求逐条 `/api/v1/usage` 接口。
-- 普通网络错误保留最后一次成功快照和登录状态；只有 401、403 或明确的未登录业务码会清除会话。
+- 普通网络错误保留最后一次成功快照和登录状态；只有 401、403 或明确的未登录业务码会清除会话并让前端与注入横条同步显示登录失效。
 - 日志和诊断信息仅保留脱敏后的公开元数据。
+
+## 版本
+
+应用、Tauri bundle 和前端包统一使用 `1.0.0`。依赖包版本仍由各自的锁文件管理，不代表 SevnX Monitor 的产品版本。

@@ -5,6 +5,8 @@ frontend/.vite/
 frontend/.pnpm-store/
 src-tauri/target/
 target/
+/.cargo-test-target/
+/.cargo-check-target/
 
 # Local credentials, browser profile, diagnostics and environment overrides
 .sevnx-profile/
@@ -21,6 +23,7 @@ target/
 # Local specification and archived prototype sources
 /PROJECT_SPEC.md
 /RAW_MimoDesktopAssistant/
+/codex-plusplus/
 
 # Engineering memory / design docs (kept local, not versioned)
 /docs/

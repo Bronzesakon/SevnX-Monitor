@@ -61,6 +61,12 @@ impl SafeLog {
         self.write_line(LogLevel::Info, event, &detail);
     }
 
+    /// [`write_critical`](Self::write_critical) plus a caller-formatted detail
+    /// string (e.g. a localized timestamp). The redaction pass still applies.
+    pub(crate) fn write_critical_dynamic(&self, event: &'static str, detail: String) {
+        self.write_line(LogLevel::Critical, event, &detail);
+    }
+
     pub(crate) fn write_login_api_path(&self, path: &str) {
         if path.len() > 160
             || !path.starts_with("/api/")

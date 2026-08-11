@@ -16,6 +16,7 @@ export type IconName =
   | 'database'
   | 'bolt'
   | 'clock'
+  | 'codex'
 
 defineProps<{
   name: IconName
@@ -86,6 +87,11 @@ defineProps<{
     </template>
     <template v-else-if="name === 'clock'">
       <path d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+    </template>
+    <template v-else-if="name === 'codex'">
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="m8.5 9 3 3-3 3" />
+      <path d="M13 15h3.5" />
     </template>
     <template v-else>
       <path d="m8 10 4 4 4-4" />

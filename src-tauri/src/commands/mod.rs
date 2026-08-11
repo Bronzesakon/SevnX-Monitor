@@ -178,6 +178,33 @@ pub fn open_log_file(app: AppHandle, services: State<'_, AppServices>) -> Result
         })
 }
 
+/// 创建指向本程序、带 `sevnx://relaunch?dbg=PORT` 参数的 Codex 快捷方式，
+/// 点击即可启动 SevnX 并注入 Codex 横条（设计 §9/§13）。默认创建到桌面，
+/// 也可指定启动菜单 / 开始菜单。图标取自已安装的 Codex 原版图标。
+#[tauri::command]
+pub fn create_codex_shortcut(
+    location: Option<crate::services::shortcut::ShortcutLocation>,
+) -> Result<String, PublicError> {
+    let location = location.unwrap_or(crate::services::shortcut::ShortcutLocation::Desktop);
+    crate::services::shortcut::create_codex_shortcut(location)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|_| {
+            PublicError::new(
+                crate::api::error::PublicErrorCode::Internal,
+                "无法创建快捷方式",
+            )
+        })
+}
+
+/// 拉起带注入状态窗的 Codex 进程：未运行则启动并注入；已运行则只注入或提示。
+/// 返回面向用户的提示文案，由前端顶部弹出。
+#[tauri::command]
+pub async fn launch_codex(app: AppHandle) -> Result<String, PublicError> {
+    crate::services::codex_launcher::launch_and_inject(&app).await.map_err(|message| {
+        PublicError::new(crate::api::error::PublicErrorCode::Internal, message)
+    })
+}
+
 /// The real exit operation is intentionally kept in the tray handler. A web
 /// view cannot cause the app to terminate by invoking this public command.
 #[tauri::command]

@@ -76,7 +76,14 @@ pub(crate) struct PersistedSession {
 pub(crate) struct RequestCredentials {
     pub(crate) cookie_header: Option<String>,
     pub(crate) authorization_header: Option<String>,
-    pub(crate) refresh_token: Option<String>,
+    pub(crate) request_context: RequestContext,
+}
+
+/// Credentials used solely for `/auth/refresh`. Unlike ordinary request
+/// credentials, this deliberately remains available after the access-token
+/// expiry boundary so the refresh operation can renew the session.
+pub(crate) struct RefreshCredentials {
+    pub(crate) refresh_token: String,
     pub(crate) request_context: RequestContext,
 }
 
@@ -254,8 +261,24 @@ impl Session {
         Ok(RequestCredentials {
             cookie_header: credentials.cookie_header,
             authorization_header: credentials.authorization_header,
-            refresh_token: credentials.refresh_token,
             request_context: credentials.request_context,
+        })
+    }
+
+    pub(crate) async fn refresh_credentials(&self) -> Result<RefreshCredentials, ApiError> {
+        let inner = self.inner.read().await;
+        let credentials = inner
+            .credentials
+            .as_ref()
+            .ok_or(ApiError::MissingCredentials)?;
+        let refresh_token = credentials
+            .refresh_token
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+            .ok_or(ApiError::MissingCredentials)?;
+        Ok(RefreshCredentials {
+            refresh_token: refresh_token.to_owned(),
+            request_context: credentials.request_context.clone(),
         })
     }
 
@@ -424,6 +447,8 @@ fn parse_set_cookie(header: &str) -> Option<(String, String, Option<DateTime<Utc
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::{RequestContext, Session, parse_set_cookie};
     use crate::model::AuthStatus;
 
@@ -486,6 +511,24 @@ mod tests {
         session.mark_validated().await;
         assert_eq!(session.status().await.auth, AuthStatus::LoggedOut);
         assert!(session.persisted_credentials().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_access_session_retains_refresh_credentials_for_renewal() {
+        let session = Session::new();
+        session
+            .install_credentials(
+                Some("session=expired-access".to_string()),
+                Some("Bearer expired-access".to_string()),
+                Some("refresh-for-renewal".to_string()),
+                Some(Utc::now() - chrono::Duration::seconds(1)),
+                RequestContext::default(),
+            )
+            .await;
+
+        let refresh = session.refresh_credentials().await.expect("refresh token");
+        assert_eq!(refresh.refresh_token, "refresh-for-renewal");
+        assert!(session.request_credentials().await.is_err());
     }
 
     #[tokio::test]

@@ -59,6 +59,19 @@ export async function openDashboardInBrowser(): Promise<void> {
   await invoke('open_dashboard_in_browser')
 }
 
+/** 拉起带注入状态窗的 Codex 进程（若未运行则启动并注入）。 */
+export async function launchCodex(): Promise<string> {
+  return await invoke('launch_codex')
+}
+
+/** 快捷方式创建位置，与后端 `ShortcutLocation` 的 camelCase 对应。 */
+export type ShortcutLocation = 'desktop' | 'startMenu'
+
+/** 在指定位置创建指向 SevnX 的 Codex 快捷方式，返回快捷方式路径。 */
+export async function createCodexShortcut(location?: ShortcutLocation): Promise<string> {
+  return invoke<string>('create_codex_shortcut', { location })
+}
+
 export async function setUsageRange(range: UsageRange): Promise<AppSnapshot> {
   return invoke<AppSnapshot>('set_usage_range', { range })
 }

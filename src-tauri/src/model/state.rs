@@ -1,7 +1,11 @@
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{
+    Arc, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    atomic::{AtomicU64, Ordering},
+};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use tokio::sync::Notify;
 
 use crate::{
     api::error::PublicError,
@@ -46,6 +50,12 @@ pub struct AppSnapshot {
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<RwLock<AppSnapshot>>,
+    /// Monotonic data version, bumped on every successful refresh. Drives the
+    /// overlay long-poll (`/sevnx/overlay/poll?rev=`) so injected clients only
+    /// receive a payload when the dashboard actually changed (design §17-M2).
+    rev: Arc<AtomicU64>,
+    /// Wakes waiting overlay long-pollers after a successful refresh.
+    notify: Arc<Notify>,
 }
 
 impl Default for AppState {
@@ -55,6 +65,8 @@ impl Default for AppState {
                 auth: AuthStatus::Validating,
                 ..AppSnapshot::default()
             })),
+            rev: Arc::new(AtomicU64::new(0)),
+            notify: Arc::new(Notify::new()),
         }
     }
 }
@@ -62,6 +74,14 @@ impl Default for AppState {
 impl AppState {
     pub fn snapshot(&self) -> AppSnapshot {
         self.read().clone()
+    }
+
+    pub fn rev(&self) -> u64 {
+        self.rev.load(Ordering::Acquire)
+    }
+
+    pub fn notify(&self) -> &Notify {
+        &self.notify
     }
 
     pub fn set_auth_status(&self, status: AuthStatus) {
@@ -86,6 +106,8 @@ impl AppState {
         snapshot.refresh = RefreshStatus::Success;
         snapshot.last_success_at = Some(completed_at);
         snapshot.last_error = None;
+        self.rev.fetch_add(1, Ordering::Release);
+        self.notify.notify_waiters();
     }
 
     /// Preserve the last successful data after ordinary request failures.
@@ -117,13 +139,17 @@ impl AppState {
 
     /// Only an explicit authentication failure clears business snapshots.
     pub fn mark_auth_expired(&self, error: PublicError) {
-        let mut snapshot = self.write();
-        snapshot.auth = AuthStatus::Expired;
-        snapshot.refresh = RefreshStatus::Idle;
-        snapshot.dashboard = None;
-        snapshot.usage = None;
-        snapshot.last_success_at = None;
-        snapshot.last_error = Some(error);
+        {
+            let mut snapshot = self.write();
+            snapshot.auth = AuthStatus::Expired;
+            snapshot.refresh = RefreshStatus::Idle;
+            snapshot.dashboard = None;
+            snapshot.usage = None;
+            snapshot.last_success_at = None;
+            snapshot.last_error = Some(error);
+        }
+        self.rev.fetch_add(1, Ordering::Release);
+        self.notify.notify_waiters();
     }
 
     pub fn mark_login_failure(&self, error: PublicError) {
@@ -228,6 +254,7 @@ mod tests {
 
         let snapshot = state.snapshot();
         assert_eq!(snapshot.auth, AuthStatus::Expired);
+        assert_eq!(state.rev(), 2);
         assert!(snapshot.dashboard.is_none());
         assert!(snapshot.usage.is_none());
     }

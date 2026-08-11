@@ -1,6 +1,6 @@
 [package]
 name = "sevnx-monitor"
-version = "0.1.0"
+version = "1.0.0"
 description = "SevnX Monitor Windows desktop application"
 authors = ["SevnX Monitor Contributors"]
 edition = "2024"
@@ -20,8 +20,10 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+axum = "0.8"
 bytes = "1"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+futures-util = "0.3"
 httpdate = "1"
 reqwest = { version = "0.12", default-features = false, features = ["brotli", "cookies", "deflate", "gzip", "json", "rustls-tls"] }
 regex = "1"
@@ -34,7 +36,9 @@ tauri-plugin-opener = "=2.5.4"
 tauri-plugin-single-instance = "=2.4.2"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-autostart = "2.5.1"
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = "0.24"
+uuid = { version = "1", features = ["v4"] }
 webview2-com = "=0.38.2"
 windows = { version = "=0.61.3", features = [
   "Win32_Foundation",
@@ -42,8 +46,12 @@ windows = { version = "=0.61.3", features = [
   "Win32_System_DataExchange",
   "Win32_System_Memory",
   "Win32_System_Ole",
+  "Win32_System_Registry",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_Storage_Packaging_Appx",
 ] }
 zeroize = "1"

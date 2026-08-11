@@ -1,6 +1,11 @@
 pub mod auto_refresh;
 pub mod balance_alert;
+pub mod codex_inject;
+pub mod codex_launcher;
 pub mod logging;
+pub mod overlay_server;
+pub mod protocol;
 pub mod refresh_scheduler;
+pub mod shortcut;
 pub mod tray;
 pub mod windows;
