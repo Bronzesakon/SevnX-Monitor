@@ -119,14 +119,19 @@ cargo tauri dev
 
 | 触发 | 行为 |
 | --- | --- |
-| push 到 `main` | 构建 NSIS 安装包并上传为 workflow artifact |
-| Pull Request 到 `main` | 同上，用于合并前验证 |
-| push `v*` 标签 | 额外创建一个草稿 Release 并附带安装包，确认后再发布 |
-| 手动 `workflow_dispatch` | 按需重新构建 |
+| push 到 `main` | 构建并把安装包发布/更新到滚动 release `latest`（标记为预发布） |
+| push `v*` 标签 | 构建并发布对应标签的正式 release |
+| Pull Request 到 `main` | 仅构建验证，不发布 |
+| 手动 `workflow_dispatch` | 按需构建；在 `main` 上会更新滚动 release |
 
-产物（只有安装包）：
+产物：安装包以 **Release 附件**形式发布，下载下来就是 `.exe`（不再有 zip）。上传前会改名为无空格的文件名，因为 GitHub 会把附件名里的空格改写成点。
 
-- `src-tauri/target/release/bundle/nsis/*.exe`（NSIS 安装包）
+| 来源 | 下载地址 |
+| --- | --- |
+| 最新 main 构建（滚动 `latest` 预发布） | `releases/download/latest/sevnx-monitor-setup.exe` |
+| `v*` 标签发布 | `releases/download/<标签>/sevnx-monitor-<标签>-setup.exe` |
+
+> 不使用 workflow artifact：GitHub 的 artifact 一律以 zip 归档交付，无法直接下载裸 exe。
 
 速度相关配置：
 
@@ -135,7 +140,6 @@ cargo tauri dev
 - `actions/cache` 复用 Tauri CLI 已下载的 NSIS 打包工具链。
 - `CARGO_INCREMENTAL=0`，减小缓存体积并提升干净构建速度。
 - 前端只构建一次：`tauri build` 的 `beforeBuildCommand` 已包含 `vue-tsc` 类型检查和 Vite 构建，工作流不再重复执行。
-- 安装包已是压缩格式，artifact 上传关闭二次压缩。
 
 ## 本地构建（已停用）
 

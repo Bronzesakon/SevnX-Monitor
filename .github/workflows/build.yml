@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write # draft release assets on tag pushes
+  contents: write # publish the installer as a release asset
 
 env:
   CARGO_TERM_COLOR: always
@@ -82,28 +82,44 @@ jobs:
       - name: Build NSIS installer
         run: tauri build --bundles nsis
 
-      - name: Upload installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: sevnx-monitor-nsis-${{ github.sha }}
-          path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
-          retention-days: 14
-          # The NSIS payload is already compressed; re-compressing wastes time.
-          compression-level: 0
-
-      # Drafts stay unpublished until reviewed, so a tag push never publishes
-      # a release by itself.
-      - name: Create draft release
-        if: startsWith(github.ref, 'refs/tags/')
+      # GitHub always delivers workflow artifacts as a zip, so the installer is
+      # published as a Release asset instead: release assets are stored as raw
+      # files and download as the .exe itself.
+      - name: Publish installer
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --draft \
-            --title "SevnX Monitor ${GITHUB_REF_NAME}" \
-            --generate-notes \
-            src-tauri/target/release/bundle/nsis/*.exe \
-          || gh release upload "${GITHUB_REF_NAME}" \
-            src-tauri/target/release/bundle/nsis/*.exe --clobber
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(src-tauri/target/release/bundle/nsis/*.exe)
+          if [ ${#installers[@]} -eq 0 ]; then
+            echo "no NSIS installer was produced" >&2
+            exit 1
+          fi
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+            title="SevnX Monitor $tag"
+            options=(--generate-notes)
+            name="sevnx-monitor-${tag}-setup.exe"
+          else
+            # Rolling build so main always exposes a direct .exe download link.
+            tag="latest"
+            title="Latest build (main)"
+            options=(--prerelease --notes "Automatic build of main at ${GITHUB_SHA}")
+            name="sevnx-monitor-setup.exe"
+          fi
+
+          # Release asset names must not contain spaces: GitHub rewrites them to
+          # dots, which would make the download URL unpredictable. Tauri names
+          # the installer after productName, hence the rename.
+          staged="${RUNNER_TEMP}/${name}"
+          cp "${installers[0]}" "$staged"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$staged" --clobber
+          else
+            gh release create "$tag" --title "$title" "${options[@]}" "$staged"
+          fi
