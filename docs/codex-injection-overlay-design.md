@@ -135,15 +135,18 @@ SevnX 本地 HTTP 服务只保留 **2 个端点**：
 
 注入 JS 运行在 Codex 页面内，**可直接访问 Codex 全局样式表**，天然可做到原生一致。
 
-- Codex 样式体系 = OpenAI **token 设计令牌**：
-  - CSS 变量：`--token-text-secondary`、`--token-bg-*`、`--token-border` 等。
+- Codex 样式体系 = OpenAI **token 设计令牌**（变量名带 `--color-` 前缀，实测 Codex 26.903）：
+  - CSS 变量：`--color-token-main-surface-primary`（主背景）、`--color-token-foreground`（主文字）、
+    `--color-token-description-foreground`（次要文字）、`--color-token-border-default`（边框）、
+    `--color-token-dropdown-background` / `-foreground`（浮层背景与文字）。
   - Utility 类：`bg-token-*`、`text-token-*`、`border-token-*`、`h-token-*`
     （参考 Codex++ `headerIconTextButtonClass` / `headerContextButtonClass` 复用的类名串）。
-  - 深浅色切换：`html.light` / `html:not(.light)` 选择器。
+  - 深浅色切换：根节点加 `electron-dark` class，`:root` 上同步重定义上述变量。
 - **做法（按推荐度）**：
   1. 直接复用 Codex 的 utility 类（`rounded-lg`、`border-token-border`、`text-token-text-secondary`、hover 态等）。
-  2. 深浅色用 `var(--token-*)` 或 `html.light/:not(.light)` 跟随，**不要硬编码色值**
-     （注意：Codex++ 模态框 `background:#2b2b2b` 是硬编码深色反例，应避免）。
+  2. 深浅色一律用 `var(--color-token-*)` 跟随，**不要硬编码色值**，也不要凭名字猜变量：
+     `--token-*` 这种少一层 `--color-` 前缀的写法在 Codex 里不存在，声明会静默失效、
+     退化成硬编码兜底，表现为深色界面上渲染出白底黑字（已实测踩坑，见 §18.1）。
   3. 对齐 Codex 面板的字体（`system-ui`）、圆角（16-18px）、hover/focus、滚动条、间距节奏。
 - 图标用内联 SVG + Codex 现有图标风格，不引入外部图标库；保持 Codex 克制扁平风格，不做毛玻璃等 fancy 效果。
 
@@ -451,6 +454,17 @@ Windows 通过协议拉起 exe 时，把**完整 URL 作为命令行参数**传�
 no injectable Codex page target`。辅助页面（avatar-overlay、quick-chat）与主窗口共用同一
 URL，只能靠 `initialRoute` 查询参数区分，所以主窗口必须排在它们之前。
 `endpoint_available` 复用同一套判定，避免"端口在跑却认为 Codex 未就绪"从而多余地重启宿主。
+
+**配色跟随 Codex 主题**：横条、详情面板、提示气泡全部引用 Codex 自己的 `--color-token-*` 变量
+（主背景 `--color-token-main-surface-primary`、主文字 `--color-token-foreground`、次要文字
+`--color-token-description-foreground`、边框 `--color-token-border-default`、浮层
+`--color-token-dropdown-background` / `-foreground`），深浅色切换无需重新注入即可跟随。
+
+实测（Codex 26.903 深色）：横条解析为 `rgb(24,24,24)` 底 + `rgb(223,223,223)` 字，与 `main`
+的背景和正文颜色完全一致；详情面板为 `rgb(45,45,45)` 浮层底。旧实现用的 `--token-*` 变量在
+Codex 中不存在，所有声明静默失效并退化成硬编码浅色（`#fff` / `#111`）——这就是深色模式下
+横条渲染成白底黑字的原因。另外 `overlay.js` 开头按 id 删除**所有**残留节点（而非只删第一个），
+避免旧副本与新副本并存时被同一份 id 样式一起上色。
 
 ### 18.2 启动形态：MS Store 版优先 COM 激活
 

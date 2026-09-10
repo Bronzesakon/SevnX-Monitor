@@ -2,23 +2,36 @@
   // The renderer can be recreated without the webview being destroyed. Keep
   // one bar and one set of listeners across repeated CDP injections.
   window.__sevnxOverlayCleanup?.();
-  document.getElementById("sevnx-overlay-bar")?.remove();
-  document.getElementById("sevnx-overlay-detail")?.remove();
-  document.getElementById("sevnx-overlay-tooltip")?.remove();
-  document.getElementById("sevnx-overlay-style")?.remove();
+  // Remove every leftover node, not just the first with each id. If an older
+  // copy is still installed when this script is re-injected, removing only the
+  // first match would strand a duplicate bar — and CSS id selectors would then
+  // style every duplicate, making the leak look intentional.
+  for (const id of ["sevnx-overlay-bar", "sevnx-overlay-detail", "sevnx-overlay-tooltip", "sevnx-overlay-style"]) {
+    document.querySelectorAll(`[id="${id}"]`).forEach((node) => node.remove());
+  }
   window.__sevnxOverlayInstalled = true;
 
   const DEBUG_PORT = 9229;
   const HEADER_SELECTOR = ".app-header-tint, header";
   const RIGHT_ANCHORED_CLASS = "sevnx-overlay-right-anchored";
   const LOADING_HIDDEN_CLASS = "sevnx-overlay-loading-hidden";
+  // Codex publishes its design tokens as `--color-*` custom properties on
+  // :root, so styling the bar with them makes it follow the live theme —
+  // including light/dark switches — instead of guessing a theme. The previous
+  // `--token-*` names do not exist in Codex, so every declaration silently fell
+  // back to its light literal and the bar rendered white on the dark UI.
+  // (Verified against Codex 26.903: --color-token-main-surface-primary #181818,
+  // --color-token-foreground #dfdfdf in dark mode.)
   const css = `
     #sevnx-overlay-bar {
       display: inline-flex; align-items: center; gap: 12px; height: 30px;
       flex: 0 0 auto; box-sizing: border-box; padding: 0 12px;
-      color: var(--token-text-primary, #111); font: 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
-      white-space: nowrap; background: var(--token-main-surface-primary, #fff);
-      border: 1px solid var(--token-border-light, #e5e5e5); border-radius: 8px;
+      color: var(--color-token-foreground, #dfdfdf);
+      font: 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+      white-space: nowrap;
+      background: var(--color-token-main-surface-primary, var(--color-surface, #181818));
+      border: 1px solid var(--color-token-border-default, rgba(255, 255, 255, .084));
+      border-radius: 8px;
       box-shadow: none; cursor: pointer; user-select: none;
       pointer-events: auto; -webkit-app-region: no-drag;
     }
@@ -30,30 +43,33 @@
     #sevnx-overlay-bar.${LOADING_HIDDEN_CLASS} { display: none; }
     #sevnx-overlay-bar .sevnx-metric { display: inline-flex; align-items: baseline; gap: 4px; }
     #sevnx-overlay-bar .sevnx-metric b { font-weight: 600; }
-    #sevnx-overlay-bar .sevnx-metric span { font-size: 10px; color: var(--token-text-secondary, #6b6b6b); }
-    #sevnx-overlay-bar .sevnx-caret { color: var(--token-text-secondary, #6b6b6b); font-size: 11px; transition: transform .15s ease; }
+    #sevnx-overlay-bar .sevnx-metric span { font-size: 10px; color: var(--color-token-description-foreground, rgba(255, 255, 255, .498)); }
+    #sevnx-overlay-bar .sevnx-caret { color: var(--color-token-description-foreground, rgba(255, 255, 255, .498)); font-size: 11px; transition: transform .15s ease; }
     #sevnx-overlay-bar.sevnx-open .sevnx-caret { transform: rotate(180deg); }
     #sevnx-overlay-detail {
       position: fixed; z-index: 2147483646; width: 260px; box-sizing: border-box;
-      background: var(--token-main-surface-primary, #fff); border: 1px solid var(--token-border-light, #e5e5e5);
+      background: var(--color-token-dropdown-background, var(--color-token-main-surface-primary, #2d2d2d));
+      border: 1px solid var(--color-token-border-default, rgba(255, 255, 255, .084));
       border-radius: 10px; padding: 14px; box-shadow: none;
-      color: var(--token-text-primary, #111); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--color-token-dropdown-foreground, var(--color-token-foreground, #dfdfdf));
+      font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
       display: none; cursor: default; -webkit-app-region: no-drag;
     }
     #sevnx-overlay-detail .sevnx-row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
-    #sevnx-overlay-detail .sevnx-row span { color: var(--token-text-secondary, #6b6b6b); }
-    #sevnx-overlay-detail .sevnx-sec { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--token-border-light, #eee); }
+    #sevnx-overlay-detail .sevnx-row span { color: var(--color-token-description-foreground, rgba(255, 255, 255, .498)); }
+    #sevnx-overlay-detail .sevnx-sec { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--color-token-border-default, rgba(255, 255, 255, .084)); }
     #sevnx-overlay-detail #sevnx-relaunch {
       display: block; box-sizing: border-box; margin-top: 10px; width: 100%; padding: 6px;
-      border: 1px solid var(--token-border-light, #ddd); border-radius: 8px;
+      border: 1px solid var(--color-token-border-default, rgba(255, 255, 255, .084)); border-radius: 8px;
       background: transparent; color: inherit; cursor: pointer; text-align: center; text-decoration: none;
     }
     #sevnx-overlay-tooltip {
       position: fixed; z-index: 2147483647; display: none; box-sizing: border-box; width: fit-content;
       max-width: min(20rem, calc(100vw - 16px)); padding: 4px 8px;
-      border: 1px solid rgba(26, 28, 31, .08); border-radius: 12.5px;
-      background: var(--token-dropdown-background, #fff); box-shadow: none;
-      color: var(--token-foreground, #1a1c1f);
+      border: 1px solid var(--color-token-border-default, rgba(255, 255, 255, .084)); border-radius: 12.5px;
+      background: var(--color-token-dropdown-background, var(--color-token-main-surface-primary, #2d2d2d));
+      box-shadow: none;
+      color: var(--color-token-foreground, #dfdfdf);
       font: 445 13px/18.5714px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       white-space: normal; overflow-wrap: break-word; user-select: none;
       pointer-events: none; -webkit-app-region: no-drag;
