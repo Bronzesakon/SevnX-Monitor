@@ -1,10 +1,12 @@
-# Formal Tauri application build artifacts
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-frontend/.pnpm-store/
-src-tauri/target/
+# Build artifacts and dependency caches. Compilation happens in CI
+# (.github/workflows/build.yml), so nothing here is ever versioned.
+node_modules/
 target/
+dist/
+.vite/
+.npm-cache/
+.pnpm-store/
+*.tsbuildinfo
 /.cargo-test-target/
 /.cargo-check-target/
 
@@ -20,10 +22,7 @@ target/
 /auth/
 /logs/
 
-# Local specification and archived prototype sources
-/PROJECT_SPEC.md
-/RAW_MimoDesktopAssistant/
+# Reference material kept local only: a vendored third-party project and the
+# archived prototype. Neither is part of the build.
 /codex-plusplus/
-
-# Engineering memory / design docs (kept local, not versioned)
-/docs/
+/RAW_MimoDesktopAssistant/

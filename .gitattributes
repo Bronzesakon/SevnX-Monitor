@@ -1,0 +1,18 @@
+# Normalize text files to LF in the repository, native line endings on checkout.
+* text=auto
+
+# Shell scripts must stay LF so they remain executable on Unix runners.
+*.sh text eol=lf
+
+# Vendored third-party payloads must stay byte-identical.
+*.zip binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.exe binary
+*.dll binary
+*.bin binary
+
+# Generated lock files: keep the exact bytes the tool wrote.
+Cargo.lock -text
+package-lock.json -text

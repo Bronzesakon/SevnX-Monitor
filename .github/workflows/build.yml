@@ -1,0 +1,109 @@
+name: build
+
+# Compilation is authoritative here. Local machines only keep sources and docs.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# One build per ref. Pushing twice in a row cancels the stale run instead of
+# paying for both, which keeps the shared caches pointing at the newest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # draft release assets on tag pushes
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts bloat the cache and are useless on a fresh runner.
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # Pins npm's cache to one directory so every npm invocation below (frontend
+  # deps + global Tauri CLI) restores from the same cached tarballs.
+  npm_config_cache: ${{ github.workspace }}/.npm-cache
+
+jobs:
+  windows-nsis:
+    name: Windows NSIS bundle
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache npm tarballs
+        uses: actions/cache@v4
+        with:
+          path: .npm-cache
+          key: ${{ runner.os }}-npm-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Restores the whole src-tauri/target tree plus the cargo registry, so an
+      # unchanged Cargo.lock skips recompiling ~400 dependency crates.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows-nsis
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # NSIS + WiX binaries are downloaded once by the Tauri CLI and reused.
+      - name: Cache Tauri bundler toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: ${{ runner.os }}-tauri-bundler-${{ hashFiles('src-tauri/tauri.conf.json') }}
+          restore-keys: ${{ runner.os }}-tauri-bundler-
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Install Tauri CLI
+        run: npm install --global @tauri-apps/cli@^2
+
+      # `tauri build` runs tauri.conf.json's beforeBuildCommand, which performs
+      # the vue-tsc type check and the Vite build. Running that here as well
+      # would compile the frontend twice, so it is deliberately not duplicated.
+      - name: Build NSIS installer
+        run: tauri build --bundles nsis
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: sevnx-monitor-nsis-${{ github.sha }}
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+          # The NSIS payload is already compressed; re-compressing wastes time.
+          compression-level: 0
+
+      # Drafts stay unpublished until reviewed, so a tag push never publishes
+      # a release by itself.
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "SevnX Monitor ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            src-tauri/target/release/bundle/nsis/*.exe \
+          || gh release upload "${GITHUB_REF_NAME}" \
+            src-tauri/target/release/bundle/nsis/*.exe --clobber

@@ -70,8 +70,9 @@ SevnX Monitor 是一个独立的 Windows 10/11 桌面应用，用于查看 SevnX
 | `src-tauri/src/services/tray.rs` | 系统托盘图标和菜单。 |
 | `src-tauri/src/services/logging.rs` | 脱敏结构化日志。 |
 | `src-tauri/tauri.conf.json` | Tauri 窗口、权限、图标和 NSIS 打包配置。 |
-| `dev-build.bat` | 构建前端并生成/启动 debug 版本。 |
-| `release-build.bat` | 生成 release EXE 和 NSIS 安装包。 |
+| `.github/workflows/build.yml` | 正式编译入口：Windows CI 构建 NSIS 安装包并上传产物。 |
+| `dev-build.bat` | 历史本地脚本；本地缓存已清理，仅作参考。 |
+| `release-build.bat` | 历史本地脚本；正式发布改由 CI 执行。 |
 
 ## 开发环境
 
@@ -108,27 +109,42 @@ cargo tauri dev
 
 正式运行请使用发布二进制或 NSIS 安装包。
 
-## 本地构建
+## CI 构建（正式编译入口）
 
-在项目根目录执行：
+编译统一由 `.github/workflows/build.yml` 在 GitHub Actions 的 `windows-latest` 上完成，本地不再作为构建环境。
 
-```powershell
-Set-Location E:\sevnX
-.\dev-build.bat
-```
+触发方式：
 
-该脚本依次执行 TypeScript 检查、生产前端构建与 Rust debug 构建，然后启动 `src-tauri/target/debug/sevnx-monitor.exe`。
+| 触发 | 行为 |
+| --- | --- |
+| push 到 `main` | 构建 NSIS 安装包并上传为 workflow artifact |
+| Pull Request 到 `main` | 同上，用于合并前验证 |
+| push `v*` 标签 | 额外创建一个草稿 Release 并附带安装包，确认后再发布 |
+| 手动 `workflow_dispatch` | 按需重新构建 |
 
-## 发布构建
+产物（只有安装包）：
 
-在项目根目录执行：
+- `src-tauri/target/release/bundle/nsis/*.exe`（NSIS 安装包）
+
+速度相关配置：
+
+- `concurrency` 取消同一分支上被取代的旧构建，避免重复占用运行器。
+- `actions/cache` 缓存 npm 包，`Swatinem/rust-cache` 缓存 `src-tauri/target` 与 cargo registry，未改动 `Cargo.lock` 时可跳过绝大部分依赖编译。
+- `actions/cache` 复用 Tauri CLI 已下载的 NSIS 打包工具链。
+- `CARGO_INCREMENTAL=0`，减小缓存体积并提升干净构建速度。
+- 前端只构建一次：`tauri build` 的 `beforeBuildCommand` 已包含 `vue-tsc` 类型检查和 Vite 构建，工作流不再重复执行。
+- 安装包已是压缩格式，artifact 上传关闭二次压缩。
+
+## 本地构建（已停用）
+
+本地 `src-tauri/target`、`frontend/node_modules`、`frontend/dist` 及 npm/pnpm 缓存均已清理，目的是让 CI 成为唯一编译入口。`dev-build.bat` 与 `release-build.bat` 作为历史参考保留，执行前需要重新安装完整工具链并重建全部依赖：
 
 ```powershell
 Set-Location E:\sevnX
 .\release-build.bat
 ```
 
-该脚本执行 TypeScript 检查，再运行 `cargo tauri build --bundles nsis`。发布二进制位于 `src-tauri/target/release/sevnx-monitor.exe`，NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。安装包使用应用标识 `com.sevnx.monitor`，产品版本为 `1.0.0`。
+安装包使用应用标识 `com.sevnx.monitor`，产品版本为 `1.0.0`。
 
 ## 安全与数据边界
 
