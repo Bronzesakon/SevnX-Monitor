@@ -438,6 +438,20 @@ Windows 通过协议拉起 exe 时，把**完整 URL 作为命令行参数**传�
 实现位置：[codex_inject.rs](src-tauri/src/services/codex_inject.rs)（`inject_overlay` / `push_overlay_data`）、
 [overlay.js](src-tauri/resources/overlay.js)。
 
+**注入目标选择**（`pick_codex_page_target`）：按优先级取第一个可注入的 page target——
+
+1. `url == app://-/index.html`：桌面宿主主窗口，实测为唯一 target。
+2. `app://-/index.html?…` 且不是 avatar-overlay / quick-chat。
+3. 标题 `ChatGPT` 且 URL 为 `chatgpt.com` / `chat.openai.com` / `data:text/html`。
+4. 以上任一条件成立的可注入页面。
+
+**为什么不能按标题匹配**：新版 Codex 的宿主只暴露一个 target，`title = "ChatGPT"`、
+`url = "app://-/index.html"`——标题和 URL 里都不含 `codex`。早期"标题或 URL 必须含 codex"
+的判定会把主窗口判成不可注入，前端表现就是 `Codex 已启动但 CDP 调试端口未就绪:
+no injectable Codex page target`。辅助页面（avatar-overlay、quick-chat）与主窗口共用同一
+URL，只能靠 `initialRoute` 查询参数区分，所以主窗口必须排在它们之前。
+`endpoint_available` 复用同一套判定，避免"端口在跑却认为 Codex 未就绪"从而多余地重启宿主。
+
 ### 18.2 启动形态：MS Store 版优先 COM 激活
 
 早期只探测独立版 exe，导致用户（MS Store 版）「点了没反应」。定稿：

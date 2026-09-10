@@ -171,7 +171,7 @@ fn response_contains_codex_target(response: &[u8], debug_port: u16) -> bool {
         return false;
     };
     targets.iter().any(|target| {
-        is_primary_codex_page_target(target)
+        is_codex_endpoint_target(target)
             && target
                 .web_socket_debugger_url
                 .as_deref()
@@ -203,6 +203,48 @@ fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
         && !is_quick_chat_page_target(target)
 }
 
+/// A desktop-app page: `app://-/index.html`, with or without an `initialRoute`
+/// query. The main window, the avatar overlay and the quick-chat hot-start page
+/// all use this URL, so the query decides which one it is — not the title.
+fn is_codex_app_page_target(target: &CdpTarget) -> bool {
+    let Ok(url) = reqwest::Url::parse(target.url.trim()) else {
+        return false;
+    };
+    url.scheme().eq_ignore_ascii_case("app")
+        && url.host_str() == Some("-")
+        && url.path().eq_ignore_ascii_case("/index.html")
+}
+
+/// The main window: `app://-/index.html` with no `initialRoute` query at all.
+///
+/// Recent Codex builds expose exactly this single target, titled `ChatGPT`, so
+/// nothing in its title or URL contains the string "codex".
+fn is_exact_codex_app_main_target(target: &CdpTarget) -> bool {
+    target.url.trim().eq_ignore_ascii_case("app://-/index.html")
+}
+
+fn is_primary_codex_app_target(target: &CdpTarget) -> bool {
+    is_codex_app_page_target(target) && is_primary_codex_page_target(target)
+}
+
+fn is_chatgpt_desktop_page_target(target: &CdpTarget) -> bool {
+    is_primary_codex_page_target(target) && is_chatgpt_desktop_page(&target.title, &target.url)
+}
+
+fn is_supported_codex_page_target(target: &CdpTarget) -> bool {
+    is_primary_codex_page_target(target)
+        && (is_codex_app_page_target(target) || is_chatgpt_desktop_page(&target.title, &target.url))
+}
+
+/// A target the overlay can actually be injected into, in the same order
+/// [`pick_codex_page_target`] prefers them.
+fn is_codex_endpoint_target(target: &CdpTarget) -> bool {
+    is_injectable_page_target(target)
+        && (is_exact_codex_app_main_target(target)
+            || is_primary_codex_app_target(target)
+            || is_chatgpt_desktop_page_target(target))
+}
+
 fn is_avatar_overlay_page_target(target: &CdpTarget) -> bool {
     initial_route(target).is_some_and(|route| route.eq_ignore_ascii_case("/avatar-overlay"))
 }
@@ -217,16 +259,10 @@ fn is_quick_chat_page_target(target: &CdpTarget) -> bool {
 }
 
 fn initial_route(target: &CdpTarget) -> Option<String> {
-    if !is_injectable_page_target(target) {
+    if !is_injectable_page_target(target) || !is_codex_app_page_target(target) {
         return None;
     }
     let url = reqwest::Url::parse(target.url.trim()).ok()?;
-    if !url.scheme().eq_ignore_ascii_case("app")
-        || url.host_str() != Some("-")
-        || !url.path().eq_ignore_ascii_case("/index.html")
-    {
-        return None;
-    }
     url.query_pairs()
         .find(|(key, _)| key.eq_ignore_ascii_case("initialRoute"))
         .map(|(_, value)| value.into_owned())
@@ -243,13 +279,28 @@ fn is_chatgpt_desktop_page(title: &str, url: &str) -> bool {
             || url.starts_with("data:text/html"))
 }
 
-/// Picks only the primary Codex page target. Auxiliary Electron pages may also
-/// expose CDP, but injecting those produces an invisible or misplaced bar.
+/// Picks the page to inject into, most specific first.
+///
+/// Order matters. The desktop host exposes its main window at
+/// `app://-/index.html` titled `ChatGPT`, so matching on the title or URL text
+/// finds nothing at all. Auxiliary pages (avatar overlay, quick-chat) share that
+/// same URL and must never be preferred over the main window.
 fn pick_codex_page_target(targets: &[CdpTarget]) -> Option<CdpTarget> {
-    targets
-        .iter()
-        .find(|target| is_injectable_page_target(target) && is_primary_codex_page_target(target))
-        .cloned()
+    let priorities: [fn(&CdpTarget) -> bool; 4] = [
+        is_exact_codex_app_main_target,
+        is_primary_codex_app_target,
+        is_chatgpt_desktop_page_target,
+        is_supported_codex_page_target,
+    ];
+    for matches_priority in priorities {
+        if let Some(target) = targets
+            .iter()
+            .find(|target| is_injectable_page_target(target) && matches_priority(target))
+        {
+            return Some(target.clone());
+        }
+    }
+    None
 }
 
 /// Evaluates a script in the target renderer and returns the CDP response.
@@ -453,5 +504,43 @@ mod tests {
             "app://-/index.html?initialRoute=%2Favatar-overlay",
         );
         assert!(pick_codex_page_target(&[avatar]).is_none());
+    }
+
+    #[test]
+    fn selects_desktop_host_main_page() {
+        // Observed on a real Codex 26.903 install: the only target is the main
+        // window, titled "ChatGPT" with no "codex" in its title or URL.
+        let main = target("ChatGPT", "app://-/index.html");
+        let selected = pick_codex_page_target(&[main]).unwrap();
+        assert_eq!(selected.url, "app://-/index.html");
+    }
+
+    #[test]
+    fn desktop_host_main_page_wins_over_auxiliary_pages() {
+        let avatar = target(
+            "ChatGPT Avatar Overlay",
+            "app://-/index.html?initialRoute=%2Favatar-overlay",
+        );
+        let quick_chat = target(
+            "ChatGPT",
+            "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat",
+        );
+        let main = target("ChatGPT", "app://-/index.html");
+
+        let selected = pick_codex_page_target(&[avatar, quick_chat, main]).unwrap();
+        assert_eq!(selected.url, "app://-/index.html");
+    }
+
+    #[test]
+    fn endpoint_accepts_desktop_host_main_page() {
+        assert!(super::is_codex_endpoint_target(&target(
+            "ChatGPT",
+            "app://-/index.html"
+        )));
+        // An auxiliary page alone is not a usable endpoint.
+        assert!(!super::is_codex_endpoint_target(&target(
+            "ChatGPT",
+            "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat"
+        )));
     }
 }
