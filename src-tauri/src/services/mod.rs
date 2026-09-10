@@ -2,6 +2,7 @@ pub mod auto_refresh;
 pub mod balance_alert;
 pub mod codex_inject;
 pub mod codex_launcher;
+pub mod codex_package;
 pub mod logging;
 pub mod overlay_server;
 pub mod protocol;

@@ -42,10 +42,12 @@ SevnX Monitor 是一个独立的 Windows 10/11 桌面应用，用于查看 SevnX
 
 - 向 OpenAI Codex 桌面应用注入一个顶部横条，实时显示 **余额 / 今日消费 / 今日 Token**，点击可展开详情状态窗。
 - 通过 CDP（`--remote-debugging-port=9229`）注入 UI 脚本，数据由 Rust 侧**主动推送**进页面，绕开 Codex 页面的 CSP 限制。
-- 支持两种启动形态：Microsoft Store 版用 COM 激活 AUMID，独立安装版直接启动 exe；启动参数自动带上 `--remote-allow-origins`。
+- 支持两种启动形态：Microsoft Store / MSIX 包用 COM 激活，独立安装版直接启动 exe；启动参数自动带上 `--remote-allow-origins`。
+- Store 版的 AUMID **从包注册信息动态推导**，不写死：包名兼容新版 MSIX 的 `~` resource id 形式，并在同机并存时优先当前宿主 `OpenAI.ChatGPT-Desktop`，其次 `OpenAI.Codex` / `OpenAI.CodexBeta`；每次启动重新查询，Store 更新后不会继续命中旧版本目录。
 - 横条优先直接插入 Codex header 的既有工具栏按钮组、排在第一个原生按钮之前；无项目页的按钮组缺失或裁切时改为右端锚定并向左展开，避免向右截断。真实 Codex 的窗口控制按钮位于原生标题栏（DOM 之外），故不覆盖三按钮。
 - **反向拉起**：注册 `sevnx://relaunch` 自定义协议，并可在桌面 / 开始菜单创建快捷方式；点击后拉取 SevnX 再注入横条。
-- 点击「打开带状态窗的 Codex」时检测运行状态：已运行则只注入并提示，未运行则启动并注入；保活 watchdog 每 5 秒检查并自动重注入。
+- 点击「打开带状态窗的 Codex」时检测运行状态：已带调试端口则只注入；宿主在运行但未开调试端口时先尝试激活，仍拿不到端口则重启宿主一次再拉起；未运行则启动并注入。保活 watchdog 每 5 秒检查并自动重注入。
+- 重启宿主时只结束 Codex 自身进程（`Codex.exe` 按名字，`ChatGPT.exe` 仅在 Codex Store 包路径内），独立安装的普通 ChatGPT 客户端不受影响。
 
 启动过渡阶段（Codex 空白页、渲染器重载或 header 尚未生成）不会显示右上角浮动横条；待稳定 header 或工具栏可用后才插入，避免遮挡和裁切。
 

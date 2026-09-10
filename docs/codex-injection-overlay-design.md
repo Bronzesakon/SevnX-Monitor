@@ -442,13 +442,25 @@ Windows 通过协议拉起 exe 时，把**完整 URL 作为命令行参数**传�
 
 早期只探测独立版 exe，导致用户（MS Store 版）「点了没反应」。定稿：
 
-- **MS Store 版**：用 COM `IApplicationActivationManager` 激活 AUMID
-  `OpenAI.Codex_2p2nqsd0c76g0!App`（及其他候选 AUMID），带
+- **MS Store 版**：用 COM `IApplicationActivationManager` 激活 AUMID，带
   `--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229`。
-- **独立安装版**：直接 `spawn` exe（detached）。
-- Store 路径含版本号（如 `OpenAI.Codex_26.730.8199.0_x64__2p2nqsd0c76g0`），用 Appx API
-  `GetPackagesByPackageFamily` 动态探测，**不硬编码**。
+- **AUMID 从包目录名反推，不写死**：`…\OpenAI.ChatGPT-Desktop_2026.514.421.0_neutral_~_2p2nqsd0c76g0\app`
+  → `OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!App`（`codex_package::packaged_aumid`）。
+- **包名解析必须兼容 `~` resource id**：新版 MSIX full name 形如
+  `Name_1.2.3.0_neutral_~_publisher`；按 `__` 切分 publisher 的旧写法解析失败，
+  会让已安装的包"看起来不存在"，直接表现为「拉不起来」。
+- **Codex 已迁移到 `OpenAI.ChatGPT-Desktop` 宿主**：同机并存时优先该包（priority 2），
+  其次 `OpenAI.Codex` / `OpenAI.CodexBeta`（priority 1）；同级取最高版本。
+- 用 Appx API `GetPackagesByPackageFamily` + `GetPackagePathByFullName` 动态探测，
+  **不硬编码**，且**每次启动重新查询**——Store 更新会同时改变 full name 和安装目录。
+- 注册信息查询失败时退回扫描 `%ProgramFiles%\WindowsApps`，再退回独立安装版。
+- 独立版搜索 `%LOCALAPPDATA%\OpenAI\ChatGPT`、`%LOCALAPPDATA%\Programs\OpenAI\ChatGPT`、
+  `%LOCALAPPDATA%\OpenAI\Codex`（含 `bin\<version>`），可执行名优先 `ChatGPT.exe`。
 - Store 目录有 ACL，读图标需从 `Assets` 用 PNG 打平成 `.ico`。
+
+实现：[codex_package.rs](src-tauri/src/services/codex_package.rs)（探测 + AUMID 推导）、
+[codex_launcher.rs](src-tauri/src/services/codex_launcher.rs)、
+[shortcut.rs](src-tauri/src/services/shortcut.rs)（图标复用同一探测结果）。
 
 ### 18.3 横条位置定稿：直接插入既有工具栏按钮组
 
@@ -492,10 +504,19 @@ Windows 通过协议拉起 exe 时，把**完整 URL 作为命令行参数**传�
 | 场景 | 行为 | 提示 |
 | --- | --- | --- |
 | 9229 已通（Codex 在跑） | 只注入 + 补起 watchdog | 「Codex 已在运行，已注入状态横条」 |
-| 进程在但无调试端口 | **不拉起**，记 `codex_already_running` | 「检测到 Codex 正在运行（未开启调试端口），未另外拉起。请先手动退出…」 |
+| 进程在但无调试端口 | 先尝试激活；端口仍不通则**重启宿主一次**后重新拉起 | 「Codex 已在运行，已重新拉起并注入状态横条」/「已重启 Codex 并注入状态横条」 |
 | 未运行 | 启动 + 注入 | 「已启动 Codex 并注入状态横条」 |
 
-实现：[codex_launcher.rs](src-tauri/src/services/codex_launcher.rs)（`launch_and_inject`）、
+**为什么不再直接拒绝**：新版 Codex 由 ChatGPT 桌面应用承载，它通常**常驻运行**；
+而对已运行的 MSIX 应用再次 `ActivateApplication` 只会把既有窗口带到前台，
+`--remote-debugging-port` 这类 Chromium 启动开关根本不会生效。因此「已运行就放弃」
+等于永久无法进入调试模式。定稿改为：先无害地尝试激活，仍拿不到调试端口才结束宿主进程后重启一次。
+
+宿主识别规则（`codex_package::is_codex_host`）：`Codex.exe` 按名字命中；
+`ChatGPT.exe` 仅当其可执行文件路径位于 Codex Store 包目录内才命中——
+独立安装的普通 ChatGPT 客户端不是 Codex，绝不能被误判或随重启一起结束。
+
+实现：[codex_launcher.rs](src-tauri/src/services/codex_launcher.rs)（`launch_and_inject`、`restart_codex_host`）、
 [commands/mod.rs](src-tauri/src/commands/mod.rs)（`launch_codex`）、
 [app.ts](frontend/src/stores/app.ts)（toast 用后端返回值）。
 
@@ -505,7 +526,8 @@ Windows 通过协议拉起 exe 时，把**完整 URL 作为命令行参数**传�
   丢失则重注入并记 `overlay_inject_lost` / `overlay_inject_recovered` / `overlay_inject_retry_failed`。
 - 每轮注入成功后**顺带推一次数据**；推送失败记 `overlay_push_failed`。
 - 日志关键事件：`codex_activated` / `codex_launch_failed` / `codex_inject_ok` / `codex_inject_failed` /
-  `overlay_inject_lost` / `overlay_inject_recovered` / `overlay_push_failed` / `codex_already_running`。
+  `codex_restart` / `codex_restart_begin` / `overlay_inject_lost` / `overlay_inject_recovered` /
+  `overlay_push_failed`。
 - 日志路径：`%LOCALAPPDATA%\SevnX Monitor\logs\sevnx-monitor.log`，时间戳前缀 UTC+8 毫秒。
 
 ### 18.7 与早期设计的差异清单
@@ -516,6 +538,6 @@ Windows 通过协议拉起 exe 时，把**完整 URL 作为命令行参数**传�
 | 注入脚本内嵌 | 端口 + token | 无敏感信息，纯 UI |
 | 起点含义 | `top:0` 即窗口顶部 | `top:0` 在「文件/编辑」行，三按钮在 DOM 外 |
 | 横条位置 | 嵌入 header 工具栏 | 直接插入既有按钮组的第一个原生按钮之前；无项目页裁切时右端锚定向左展开 |
-| 启动方式 | 独立 exe spawn | MS Store COM 激活优先 + 独立 spawn |
-| 已运行处理 | 统一「已启动」 | 三态文案 |
+| 启动方式 | 独立 exe spawn | 包注册查询推导 AUMID（优先 ChatGPT-Desktop）+ COM 激活，独立版 spawn 兜底 |
+| 已运行处理 | 统一「已启动」 | 已运行但无调试端口 → 重启宿主后拉起；其余三态文案 |
 | 快捷方式 | 桌面 | 桌面/启动/开始菜单三位置 + 图标打平 |

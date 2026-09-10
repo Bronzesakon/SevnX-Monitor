@@ -1033,12 +1033,13 @@ E:\DeepSeekDesktopAssistant\sevnx\.sevnx-profile
 ### 27.4 关键机制
 
 - **数据通道**：Codex 渲染进程 CSP 会拦截页内 loopback `fetch`，故改为 Rust 通过 CDP `Runtime.evaluate` 主动推送 `window.__sevnxOverlayPush(json)`；横条 15s 无推送判定「断联」。
-- **启动形态**：MS Store 版用 `IApplicationActivationManager` 激活 AUMID `OpenAI.Codex_2p2nqsd0c76g0!App`；独立版直接 spawn。启动参数必带 `--remote-allow-origins`。
+- **启动形态**：MS Store / MSIX 包用 `IApplicationActivationManager` 激活，独立版直接 spawn。启动参数必带 `--remote-allow-origins`。
+- **AUMID 推导**：从包注册信息动态探测（`GetPackagesByPackageFamily` + `GetPackagePathByFullName`），并由包目录名反推 AUMID，不写死；包名解析兼容新版 MSIX 的 `~` resource id 形式，同机并存时优先宿主 `OpenAI.ChatGPT-Desktop`，其次 `OpenAI.Codex` / `OpenAI.CodexBeta`，同级取最高版本；每次启动重新查询。
 - **反向拉起**：`sevnx://relaunch` 协议 + 多位置快捷方式。断联控件使用真实协议链接，Windows Shell 读取已回读校验的 HKCU `shell\open\command` 启动 SevnX → 注入。
 - **横条位置**：优先直接插入 Codex header 的既有工具栏按钮组、置于第一个原生按钮之前；无项目页的按钮组缺失或裁切时改为右端锚定、向左展开。窗口控制按钮在原生标题栏（DOM 之外），无法 Web 注入到三按钮行。
-- **运行状态**：点击「打开带状态窗的 Codex」时分三态处理（已在跑/在跑无端口/未运行），前端顶部 toast 展示。
+- **运行状态**：点击「打开带状态窗的 Codex」时分三态处理（已在跑/在跑无端口/未运行），前端顶部 toast 展示。在跑无端口时先尝试激活，仍拿不到调试端口则重启宿主一次再拉起——新版 Codex 由常驻的 ChatGPT 桌面宿主承载，对已运行实例再次激活不会应用 Chromium 启动开关。
 - **保活**：watchdog 每 5s 检查注入状态，丢失自动重注入并推送。
 
 ### 27.5 主要日志事件
 
-`codex_activated` / `codex_launch_failed` / `codex_inject_ok` / `codex_inject_failed` / `overlay_inject_lost` / `overlay_inject_recovered` / `overlay_inject_retry_failed` / `overlay_push_failed` / `codex_already_running`。
+`codex_activated` / `codex_launch_failed` / `codex_inject_ok` / `codex_inject_failed` / `codex_restart` / `codex_restart_begin` / `overlay_inject_lost` / `overlay_inject_recovered` / `overlay_inject_retry_failed` / `overlay_push_failed`。

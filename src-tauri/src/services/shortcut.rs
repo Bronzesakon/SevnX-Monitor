@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use windows::core::{Interface, PCWSTR};
+
+use crate::services::codex_package;
 use windows::Win32::{
     System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -60,7 +62,10 @@ fn wide(text: &str) -> Vec<u16> {
 }
 
 fn wide_path(path: &Path) -> Vec<u16> {
-    path.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect()
+    path.to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn folder_for(location: ShortcutLocation) -> Option<PathBuf> {
@@ -76,94 +81,15 @@ fn folder_for(location: ShortcutLocation) -> Option<PathBuf> {
     }
 }
 
-/// OpenAI desktop package family names (identity + publisher id).
-const OPENAI_PACKAGE_FAMILIES: &[&str] = &[
-    "OpenAI.Codex_2p2nqsd0c76g0",
-    "OpenAI.CodexBeta_2p2nqsd0c76g0",
-    "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0",
-];
-
-#[cfg(windows)]
+/// Root directory of the installed Codex Store package, if one is registered.
+///
+/// Shares discovery with the launcher, so the icon follows whichever package the
+/// app is actually launched from (`OpenAI.ChatGPT-Desktop` after the host
+/// migration). Registration is re-queried per call for the same reason.
 fn store_codex_install_dir() -> Option<PathBuf> {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
-    use windows::Win32::Foundation::{
-        APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
-    };
-    use windows::Win32::Storage::Packaging::Appx::{
-        GetPackagePathByFullName, GetPackagesByPackageFamily,
-    };
-    use windows::core::{PCWSTR, PWSTR};
-
-    for family in OPENAI_PACKAGE_FAMILIES {
-        let family = family.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
-        let mut count = 0u32;
-        let mut buffer_length = 0u32;
-        let first = unsafe {
-            GetPackagesByPackageFamily(
-                PCWSTR(family.as_ptr()),
-                &mut count,
-                None,
-                &mut buffer_length,
-                None,
-            )
-        };
-        if first == APPMODEL_ERROR_NO_PACKAGE || (first == ERROR_SUCCESS && count == 0) {
-            continue;
-        }
-        if first != ERROR_INSUFFICIENT_BUFFER {
-            continue;
-        }
-        let mut pointers = vec![PWSTR(std::ptr::null_mut()); count as usize];
-        let mut buffer = vec![0u16; buffer_length as usize];
-        let status = unsafe {
-            GetPackagesByPackageFamily(
-                PCWSTR(family.as_ptr()),
-                &mut count,
-                Some(pointers.as_mut_ptr()),
-                &mut buffer_length,
-                Some(PWSTR(buffer.as_mut_ptr())),
-            )
-        };
-        if status != ERROR_SUCCESS {
-            continue;
-        }
-        buffer.truncate(buffer_length as usize);
-        let full_names = buffer
-            .split(|value| *value == 0)
-            .filter(|value| !value.is_empty())
-            .map(|value| String::from_utf16(value).unwrap_or_default())
-            .collect::<Vec<_>>();
-        for full_name in full_names {
-            let full_name = full_name.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
-            let mut path_length = 0u32;
-            if unsafe {
-                GetPackagePathByFullName(PCWSTR(full_name.as_ptr()), &mut path_length, None)
-            } != ERROR_INSUFFICIENT_BUFFER
-            {
-                continue;
-            }
-            let mut path = vec![0u16; path_length as usize];
-            if unsafe {
-                GetPackagePathByFullName(
-                    PCWSTR(full_name.as_ptr()),
-                    &mut path_length,
-                    Some(PWSTR(path.as_mut_ptr())),
-                )
-            } != ERROR_SUCCESS
-            {
-                continue;
-            }
-            let end = path.iter().position(|value| *value == 0).unwrap_or(path.len());
-            return Some(PathBuf::from(OsString::from_wide(&path[..end])));
-        }
-    }
-    None
-}
-
-#[cfg(not(windows))]
-fn store_codex_install_dir() -> Option<PathBuf> {
-    None
+    let app_dir = codex_package::resolve_app_dir()?;
+    codex_package::is_store_package_path(&app_dir)
+        .then(|| codex_package::package_root(&app_dir).to_path_buf())
 }
 
 /// Wraps a PNG payload in an ICO container (Vista+ recognizes PNG-compressed
@@ -216,45 +142,12 @@ fn codex_icon_source() -> Option<PathBuf> {
     standalone_codex_exe()
 }
 
-/// Locates a standalone Codex desktop executable (for icon fallback).
+/// Locates a standalone Codex desktop executable (for icon fallback). Shares the
+/// install-layout search with the launcher.
 fn standalone_codex_exe() -> Option<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA")?;
-    let roots = [
-        PathBuf::from(&local).join("OpenAI").join("Codex"),
-        PathBuf::from(&local).join("Programs").join("OpenAI").join("Codex"),
-    ];
-    for name in ["Codex.exe", "ChatGPT.exe", "codex.exe"] {
-        for root in &roots {
-            let direct = root.join(name);
-            if direct.is_file() {
-                return Some(direct);
-            }
-            let bin = root.join("bin");
-            if bin.is_dir() {
-                if let Some(candidate) = recursive_exe_in(&bin, name) {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn recursive_exe_in(dir: &Path, name: &str) -> Option<PathBuf> {
-    let direct = dir.join(name);
-    if direct.is_file() {
-        return Some(direct);
-    }
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let candidate = path.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+    let app_dir = codex_package::find_standalone_app_dir()?;
+    let exe = codex_package::executable_for(&app_dir);
+    exe.is_file().then_some(exe)
 }
 
 /// Creates `<location>/Codex (SevnX 监控).lnk` pointing at this exe with the
