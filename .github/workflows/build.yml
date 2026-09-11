@@ -36,6 +36,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Records the build start time and this commit's time in UTC+8 (second
+      # precision) for the release title/notes. The offset is applied
+      # arithmetically (epoch + 28800) instead of TZ=Asia/Shanghai: whether the
+      # runner ships a tz database and whether `date` honours TZ is not something
+      # this should depend on -- in Git Bash TZ=Asia/Shanghai silently falls back
+      # to GMT, which would print a wrong "UTC+8" time. China has no DST, so a
+      # fixed +8h offset is correct all year. Same approach as Zcode_harmony's CI.
+      # Echoed to the log so the exact values can be checked from a run.
+      - name: Record timestamps (UTC+8)
+        shell: bash
+        run: |
+          cst() { # $1 = ISO timestamp (empty for now); $2 = date format
+            local epoch
+            if [ -n "$1" ]; then epoch=$(date -u -d "$1" +%s); else epoch=$(date -u +%s); fi
+            date -u -d "@$((epoch + 28800))" "$2"
+          }
+          build_start=$(cst '' '+%Y-%m-%d %H:%M:%S')
+          push_time=$(cst "$(git log -1 --pretty=%cI)" '+%Y-%m-%d %H:%M:%S')
+          {
+            echo "BUILD_START_UTC8=$build_start"
+            echo "PUSH_TIME_UTC8=$push_time"
+          } >> "$GITHUB_ENV"
+          echo "build start $build_start (UTC+8) - commit $push_time (UTC+8)"
+
       - name: Cache npm tarballs
         uses: actions/cache@v4
         with:
@@ -99,11 +123,26 @@ jobs:
             exit 1
           fi
 
+          # Timestamps come from the Record timestamps step (UTC+8, second
+          # precision) via GITHUB_ENV; recomputed here as a fallback so a skipped
+          # step cannot produce an empty value.
+          cst_fallback() {
+            local epoch
+            if [ -n "$1" ]; then epoch=$(date -u -d "$1" +%s); else epoch=$(date -u +%s); fi
+            date -u -d "@$((epoch + 28800))" '%Y-%m-%d %H:%M:%S'
+          }
+          build_start="${BUILD_START_UTC8:-$(cst_fallback '')}"
+          push_time="${PUSH_TIME_UTC8:-$(cst_fallback "$(git log -1 --pretty=%cI)")}"
+
+          # Notes always carry both UTC+8 timestamps: the commit time comes from
+          # the commit itself (still meaningful on a re-run), the build start from
+          # this job.
+          notes="build start ${build_start} (UTC+8) - commit ${push_time} (UTC+8) - ${GITHUB_SHA:0:7}"
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             tag="$GITHUB_REF_NAME"
             title="SevnX Monitor $tag"
-            notes=""
-            options=(--generate-notes)
+            # Our line first, GitHub's generated changelog appended after it.
+            options=(--notes "$notes" --generate-notes)
             name="sevnx-monitor-${tag}-setup.exe"
             rolling=false
           else
@@ -111,8 +150,7 @@ jobs:
             # The tag deliberately has no `v` prefix: moving it below would
             # otherwise match this workflow's `v*` trigger and start a second run.
             tag="latest"
-            title="Latest build (main, $(date -u +%Y-%m-%d))"
-            notes="Automatic build of main at ${GITHUB_SHA}"
+            title="Latest build (main, ${build_start} UTC+8)"
             options=(--prerelease --notes "$notes")
             name="sevnx-monitor-setup.exe"
             rolling=true
