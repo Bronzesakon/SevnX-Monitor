@@ -215,7 +215,7 @@ SevnX 本地 HTTP 服务只保留 **2 个端点**：
 1. 建桌面快捷方式：目标 = `sevnx-monitor.exe`，参数 = `--launch-codex`。
 2. `lib.rs` 的 `single_instance` 插件（L25-27）已会聚焦已有实例并转发 argv；
    在回调识别 `--launch-codex` → 触发 `services.launch_and_inject()`。
-3. 效果：**点快捷方式 → SevnX 常驻/聚焦 → Codex 带调试端口启动 → 注入**。
+3. 效果：**点快捷方式 → SevnX 驻留托盘（不弹出主窗口） → Codex 带调试端口启动 → 注入**。
 
 ---
 
@@ -522,6 +522,8 @@ Codex 中不存在，所有声明静默失效并退化成硬编码浅色（`#fff
 - **收链**（[lib.rs](src-tauri/src/lib.rs) `parse_requested_debug_port`）：启动 argv 与
   `single-instance` 回调都解析 `dbg=` 端口 → `relaunch_and_inject`；该流程在端口不可用时按 Store COM / 独立版顺序拉起 Codex，
   端口可用时只注入，随后统一启动 watchdog。点快捷方式或断联按钮 = 拉 SevnX → 恢复同一启动状态机。
+  该路径是后台注入请求，不弹出主窗口：启动 argv 或 `single-instance` 回调命中 `dbg=` 时跳过
+  `show_main_window`，主窗口保持托盘隐藏（`main` 窗口配置 `visible:false`，只有普通启动才显式显示）。
 - **断联按钮**：横条内是直接的 `<a href="sevnx://relaunch?dbg=9229">`，不通过 JS 合成点击；
   浏览器将用户点击交给 Windows Shell，Shell 再读取上述协议注册表命令并启动 SevnX。
 

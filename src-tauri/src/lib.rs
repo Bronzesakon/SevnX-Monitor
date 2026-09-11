@@ -24,10 +24,15 @@ pub fn run() {
         // This plugin must be first so a second launch focuses the existing
         // application before any other initialization runs.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let _ = services::windows::show_main_window(app);
             // A second launch via `sevnx://relaunch?dbg=PORT` relays the port
-            // through the same lifecycle as the in-app launch command.
-            if let Some(port) = parse_requested_debug_port(&argv) {
+            // through the same lifecycle as the in-app launch command. It is a
+            // background request (Codex shortcut / overlay reconnect), so the
+            // dashboard must not pop over the host being injected into.
+            let relaunch_port = parse_requested_debug_port(&argv);
+            if relaunch_port.is_none() {
+                let _ = services::windows::show_main_window(app);
+            }
+            if let Some(port) = relaunch_port {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let services = app.state::<crate::app::AppServices>();
@@ -49,9 +54,14 @@ pub fn run() {
         .manage(services)
         .setup(move |app| {
             services::tray::setup(app)?;
-            // Explicitly restore and focus the main window on the initial launch.
-            services::windows::show_main_window(app.handle())
-                .map_err(|error| std::io::Error::other(error.message))?;
+            // A plain launch restores and focuses the main window. A
+            // `sevnx://relaunch?dbg=PORT` launch (Codex shortcut / overlay
+            // reconnect) is a background injection request instead, so the
+            // window stays hidden next to the tray icon.
+            if requested_debug_port.is_none() {
+                services::windows::show_main_window(app.handle())
+                    .map_err(|error| std::io::Error::other(error.message))?;
+            }
             let services = app.state::<app::AppServices>();
             let (bar_visible, bar_position) = services.initial_bar_state();
             services::windows::create_bar_window(app.handle(), bar_visible, bar_position)
