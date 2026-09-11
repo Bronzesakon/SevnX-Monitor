@@ -102,14 +102,20 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             tag="$GITHUB_REF_NAME"
             title="SevnX Monitor $tag"
+            notes=""
             options=(--generate-notes)
             name="sevnx-monitor-${tag}-setup.exe"
+            rolling=false
           else
             # Rolling build so main always exposes a direct .exe download link.
+            # The tag deliberately has no `v` prefix: moving it below would
+            # otherwise match this workflow's `v*` trigger and start a second run.
             tag="latest"
-            title="Latest build (main)"
-            options=(--prerelease --notes "Automatic build of main at ${GITHUB_SHA}")
+            title="Latest build (main, $(date -u +%Y-%m-%d))"
+            notes="Automatic build of main at ${GITHUB_SHA}"
+            options=(--prerelease --notes "$notes")
             name="sevnx-monitor-setup.exe"
+            rolling=true
           fi
 
           # Release asset names must not contain spaces: GitHub rewrites them to
@@ -120,6 +126,13 @@ jobs:
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$staged" --clobber
+            if [ "$rolling" = true ]; then
+              # Uploading only swaps the asset. Without moving the tag and
+              # refreshing title/notes, the release page keeps advertising the
+              # commit that first created it while serving a newer binary.
+              git push --force origin "HEAD:refs/tags/$tag"
+              gh release edit "$tag" --title "$title" --notes "$notes"
+            fi
           else
             gh release create "$tag" --title "$title" "${options[@]}" "$staged"
           fi

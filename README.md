@@ -119,7 +119,7 @@ cargo tauri dev
 
 | 触发 | 行为 |
 | --- | --- |
-| push 到 `main` | 构建并把安装包发布/更新到滚动 release `latest`（标记为预发布） |
+| push 到 `main` | 构建并把安装包发布/更新到滚动 release `latest`（预发布）；标签、标题日期与说明同步指向本次构建的提交 |
 | push `v*` 标签 | 构建并发布对应标签的正式 release |
 | Pull Request 到 `main` | 仅构建验证，不发布 |
 | 手动 `workflow_dispatch` | 按需构建；在 `main` 上会更新滚动 release |
@@ -132,6 +132,10 @@ cargo tauri dev
 | `v*` 标签发布 | `releases/download/<标签>/sevnx-monitor-<标签>-setup.exe` |
 
 > 不使用 workflow artifact：GitHub 的 artifact 一律以 zip 归档交付，无法直接下载裸 exe。
+>
+> 滚动 release 复用同一个 `latest` 标签，每次构建会**强制移动该标签**到当前提交并刷新标题日期与说明，
+> 否则页面会一直显示首次创建时的 SHA（附件虽已更新，元数据却是旧的）。标签名不带 `v` 前缀，
+> 正是为了避免移动标签时匹配到本工作流的 `v*` 触发条件而自触发第二轮构建。
 
 速度相关配置：
 
